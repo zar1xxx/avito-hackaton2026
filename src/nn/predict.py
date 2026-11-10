@@ -31,6 +31,8 @@ def generate_predictions(
     checkpoint_path: str,
     split: str = "test",
     batch_size: int = 32,
+    max_parts: int | None = None,
+    max_feeds: int | None = None,
     device_str: str | None = None,
     out_path: str = "submission.parquet",
 ) -> None:
@@ -47,7 +49,12 @@ def generate_predictions(
     print(f"Загружен чекпоинт из эпохи {epoch} (Val NDCG: {best_ndcg:.4f})")
 
     # 2. Инициализация датасета
-    dataset = FeedRankingDataset(data_root=data_root, split=split)
+    dataset = FeedRankingDataset(
+        data_root=data_root,
+        split=split,
+        max_parts=max_parts,
+        max_feeds=max_feeds,
+    )
     print(f"Лент для скоринга: {len(dataset):,}")
 
     loader = DataLoader(
@@ -127,6 +134,8 @@ def main() -> None:
     parser.add_argument("--split", default="test", help="Сплит для инференса (test или val)")
     parser.add_argument("--model", default="models/nn/run_prod/best_model.pt", help="Путь к чекпоинту")
     parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--max-parts", type=int, default=None, help="Ограничить количество партов")
+    parser.add_argument("--max-feeds", type=int, default=None, help="Ограничить количество лент")
     parser.add_argument("--out", default="models/nn/run_prod/submission.parquet", help="Путь к выходному parquet")
     parser.add_argument("--device", default=None)
     args = parser.parse_args()
@@ -136,6 +145,8 @@ def main() -> None:
         checkpoint_path=args.model,
         split=args.split,
         batch_size=args.batch_size,
+        max_parts=args.max_parts,
+        max_feeds=args.max_feeds,
         device_str=args.device,
         out_path=args.out,
     )

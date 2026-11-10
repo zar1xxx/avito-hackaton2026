@@ -152,12 +152,14 @@ class FeedRankingDataset(Dataset):
         split: str = "train",
         parts: Sequence[Path] | None = None,
         max_parts: int | None = None,
+        max_feeds: int | None = None,
         max_hist_len: int = 256,
     ) -> None:
         super().__init__()
         self.data_root = Path(data_root)
         self.split = split
         self.max_hist_len = max_hist_len
+        self.max_feeds = max_feeds
 
         # Поиск parquet-партов
         if parts is None:
@@ -176,6 +178,13 @@ class FeedRankingDataset(Dataset):
 
         self.cum_sizes = np.cumsum([0] + self.part_sizes)
         self.total_rows = int(self.cum_sizes[-1])
+
+        # Ограничение по количеству лент (защита от OOM и для быстрой отладки)
+        if self.max_feeds is not None and self.max_feeds > 0:
+            self.total_rows = min(self.total_rows, self.max_feeds)
+            # Отсекаем неиспользуемые парты для экономии дескрипторов
+            active_parts_count = int(np.searchsorted(self.cum_sizes, self.total_rows, side="right"))
+            self.parts = self.parts[:max(active_parts_count, 1)]
 
         self._emb_memmap: np.memmap | None = None
         self._cached_part_idx: int = -1

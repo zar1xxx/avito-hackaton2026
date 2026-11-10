@@ -115,11 +115,15 @@ def train(args: argparse.Namespace) -> None:
     train_dataset = FeedRankingDataset(
         data_root=args.data,
         split=args.train_split,
+        max_parts=args.max_parts,
+        max_feeds=args.max_feeds,
         max_hist_len=args.max_hist_len,
     )
     val_dataset = FeedRankingDataset(
         data_root=args.data,
         split=args.val_split,
+        max_parts=args.max_parts,
+        max_feeds=args.max_feeds // 3 if args.max_feeds else None,
         max_hist_len=args.max_hist_len,
     )
 
@@ -178,6 +182,12 @@ def train(args: argparse.Namespace) -> None:
     best_ndcg = -1.0
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Инициализация файла истории метрик
+    history_file = out_dir / "history.csv"
+    with open(history_file, "w", encoding="utf-8") as f:
+        f.write("epoch,train_loss,val_ndcg_full,val_ndcg_idcg30,val_ndcg_at30,lr,epoch_time_sec,best_ndcg\n")
+        f.write(f"0,NaN,{init_metrics['ndcg_full']:.5f},{init_metrics['ndcg_idcg30']:.5f},{init_metrics['ndcg@30']:.5f},{args.lr:.2e},0.0,{init_metrics['ndcg_full']:.5f}\n")
 
     # 4. Цикл обучения с EarlyStopping
     global_step = 0
@@ -250,6 +260,15 @@ def train(args: argparse.Namespace) -> None:
         else:
             patience_counter += 1
 
+        # Запись эпохи в history.csv
+        avg_train_loss = float(np.mean(epoch_losses)) if epoch_losses else 0.0
+        with open(history_file, "a", encoding="utf-8") as f:
+            f.write(
+                f"{epoch},{avg_train_loss:.5f},{val_metrics['ndcg_full']:.5f},"
+                f"{val_metrics['ndcg_idcg30']:.5f},{val_metrics['ndcg@30']:.5f},"
+                f"{cur_lr:.2e},{epoch_duration:.2f},{best_ndcg:.5f}\n"
+            )
+
         print("-" * 75)
         print(
             f"--> Конец Эпохи {epoch} ({epoch_duration:.2f}с, {train_throughput:.1f} лент/сек) | "
@@ -287,6 +306,8 @@ def main() -> None:
     parser.add_argument("--nhead", type=int, default=4)
     parser.add_argument("--num-categories", type=int, default=1000)
     parser.add_argument("--max-hist-len", type=int, default=256)
+    parser.add_argument("--max-parts", type=int, default=None, help="Ограничить количество читаемых партов (для быстрого дебага)")
+    parser.add_argument("--max-feeds", type=int, default=None, help="Ограничить общее количество читаемых лент (защита от OOM)")
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--loss", choices=["listnet", "bce"], default="listnet")
     parser.add_argument("--use-pos-bias", action="store_true", default=True, help="Включить голову debias для pos на train")
