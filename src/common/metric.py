@@ -49,6 +49,27 @@ def ndcg_one(
     return dcg / idcg if idcg > 0 else 1.0
 
 
+def per_feed_ndcg(
+    feed_ids: np.ndarray,
+    target: np.ndarray,
+    score: np.ndarray,
+    cutoff: int | None = None,
+    idcg_k: int | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """NDCG каждой ленты: (отсортированные feed_id, значения). Нужно для бутстрепа и сравнения моделей."""
+    feed_ids = np.asarray(feed_ids)
+    target = np.asarray(target)
+    score = np.asarray(score)
+    order = np.argsort(feed_ids, kind="stable")
+    f = feed_ids[order]
+    bounds = np.flatnonzero(np.diff(f)) + 1
+    starts = np.concatenate([[0], bounds])
+    ends = np.concatenate([bounds, [len(f)]])
+    t, s = target[order], score[order]
+    vals = np.array([ndcg_one(t[a:b], s[a:b], cutoff, idcg_k) for a, b in zip(starts, ends)])
+    return f[starts], vals
+
+
 def mean_ndcg(
     feed_ids: np.ndarray,
     target: np.ndarray,

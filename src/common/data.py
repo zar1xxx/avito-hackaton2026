@@ -155,8 +155,42 @@ def iter_split(data_root: str | Path, split: str, max_parts: int | None = None) 
         yield build_part(p, emb)
 
 
-def load_split(data_root: str | Path, split: str, max_parts: int | None = None) -> pl.DataFrame:
-    return pl.concat(list(iter_split(data_root, split, max_parts)), how="vertical")
+def _build_one(args: tuple[str, str, str]) -> pl.DataFrame:
+    data_root, split, part = args
+    return build_part(Path(part), load_embeddings(data_root, split))  # memmap открывается в каждом процессе
+
+
+def load_split(data_root: str | Path, split: str, max_parts: int | None = None, n_jobs: int = 1,
+               cache_dir: str | Path | None = None) -> pl.DataFrame:
+    """Таблица кандидатов с признаками. cache_dir — кэш готовой таблицы (строить долго, читать быстро)."""
+    cache = None
+    if cache_dir is not None:
+        Path(cache_dir).mkdir(parents=True, exist_ok=True)
+        cache = Path(cache_dir) / f"{split}_parts{max_parts}.parquet"
+        if cache.exists():
+            return pl.read_parquet(cache)
+    parts = list_parts(data_root, split)[:max_parts]
+    if n_jobs > 1:
+        from concurrent.futures import ProcessPoolExecutor
+        with ProcessPoolExecutor(n_jobs) as ex:
+            frames = list(ex.map(_build_one, [(str(data_root), split, str(p)) for p in parts]))
+    else:
+        emb = load_embeddings(data_root, split)
+        frames = [build_part(p, emb) for p in parts]
+    df = pl.concat(frames, how="vertical")
+    if cache is not None:
+        df.write_parquet(cache, compression="zstd")
+    return df
+
+
+def load_labels(data_root: str | Path, split: str, max_parts: int | None = None) -> pl.DataFrame:
+    """Лёгкая таблица (feed_id, timestamp, item_id[, target]) без признаков — для ансамбля и метрик."""
+    out = []
+    for p in list_parts(data_root, split)[:max_parts]:
+        cols = pl.read_parquet_schema(p).keys()
+        take = ["feed_id", "timestamp", "item_id"] + (["target"] if "target" in cols else [])
+        out.append(pl.read_parquet(p, columns=take).explode([c for c in take if c not in ("feed_id", "timestamp")]))
+    return pl.concat(out, how="vertical")
 
 
 MODEL_FEATURES = (
