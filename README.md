@@ -39,3 +39,26 @@ GPU: `--task-type GPU`. Для быстрых экспериментов: `--max
 ## Формат общих артефактов
 - Предсказание модели: parquet `feed_id:int32, item_id:int32, score:float32`.
 - Для ансамбля также нужны OOF-предсказания на val в том же формате (с колонкой `target`).
+
+## Нейросеть (Август)
+```bash
+# Обучение модели
+python -u src/nn/train.py --data /path/to/competition --epochs 10 --batch-size 64 --out runs/nn-01
+
+# Предсказание на test (сабмит)
+python -u src/nn/predict.py --data /path/to/competition --split test --model runs/nn-01/best_model.pt --out runs/nn-01/submission.parquet
+
+# OOF-предсказания на val (для блендинга)
+python -u src/nn/predict.py --data /path/to/competition --split val --model runs/nn-01/best_model.pt --out runs/nn-01/oof_val.parquet
+```
+
+## Ранговый блендинг GBDT + NN (Даня и Август)
+```bash
+# Подбор весов на val и генерация итогового сабмита:
+python -u src/ensemble/blend.py \
+    --val-nn runs/nn-01/oof_val.parquet \
+    --val-gbdt runs/gbdt-01/oof_val.parquet \
+    --test-nn runs/nn-01/submission.parquet \
+    --test-gbdt runs/gbdt-01/submission.parquet \
+    --out runs/ensemble/submission_blend.parquet
+```
