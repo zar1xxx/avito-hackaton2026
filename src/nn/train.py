@@ -4,6 +4,7 @@
 - History Transformer Encoder + Candidate-to-History Cross-Attention
 - Positional Debias: обучение с головой позиции на train, отключение на val/test
 - ListNet ranking loss с температурой
+- EarlyStopping и ReduceLROnPlateau scheduler
 - Оценку валидационного NDCG по чистым контентным скорам
 """
 from __future__ import annotations
@@ -13,7 +14,6 @@ import sys
 import time
 from pathlib import Path
 
-# Корень проекта в sys.path
 ROOT = Path(__file__).resolve().parent.parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -25,7 +25,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from src.common.metric import all_variants
-from src.nn.dataset import FeedRankingDataset, collate_ranking_batch
+from src.nn.dataset import NUM_CAND_FEATS, FeedRankingDataset, collate_ranking_batch
 from src.nn.model import FeedRankingModel
 
 
@@ -39,12 +39,10 @@ def listnet_loss(
     masked_logits = logits.masked_fill(~mask, -1e9)
     pred_log_probs = F.log_softmax(masked_logits, dim=-1)
 
-    # Нормализуем таргеты внутри ленты: позитивы получают больший вес
     scaled_targets = (targets * 3.0) / target_temperature
     masked_targets = scaled_targets.masked_fill(~mask, -1e9)
     true_probs = F.softmax(masked_targets, dim=-1)
 
-    # Cross-entropy по лентам
     feed_loss = -(true_probs * pred_log_probs).sum(dim=-1)
 
     has_candidates = mask.any(dim=-1)
@@ -77,7 +75,6 @@ def evaluate_ndcg(
             if isinstance(v, torch.Tensor):
                 batch[k] = v.to(device, non_blocking=True)
 
-        # Валидация ВСЕГДА без position bias (чистый main_score)
         _, main_scores = model(batch, use_pos_bias=False)
         mask = batch["candidate_mask"]
 
@@ -108,20 +105,21 @@ def evaluate_ndcg(
 
 def train(args: argparse.Namespace) -> None:
     device = torch.device(args.device if args.device else ("cuda" if torch.cuda.is_available() else "cpu"))
-    print("=" * 70)
+    print("=" * 75)
     print(f"Запуск обучения: {args.data} | Device: {device} | Loss: {args.loss}")
-    print(f"Positional Debias: {'ВКЛЮЧЕН (обучение головы pos)' if args.use_pos_bias else 'ОТКЛЮЧЕН'}")
-    print("=" * 70)
+    print(f"Сплиты: train='{args.train_split}', val='{args.val_split}'")
+    print(f"Debias: {'ВКЛЮЧЕН' if args.use_pos_bias else 'ОТКЛЮЧЕН'} | EarlyStopping patience: {args.patience}")
+    print("=" * 75)
 
     # 1. Загрузка данных
     train_dataset = FeedRankingDataset(
         data_root=args.data,
-        split="train",
+        split=args.train_split,
         max_hist_len=args.max_hist_len,
     )
     val_dataset = FeedRankingDataset(
         data_root=args.data,
-        split="val",
+        split=args.val_split,
         max_hist_len=args.max_hist_len,
     )
 
@@ -144,32 +142,46 @@ def train(args: argparse.Namespace) -> None:
         pin_memory=(device.type == "cuda"),
     )
 
+    # Конфиг модели для сохранения в чекпоинт
+    model_config = {
+        "emb_dim": 128,
+        "d_model": args.hidden_dim,
+        "nhead": args.nhead,
+        "num_categories": args.num_categories,
+        "num_cand_feats": NUM_CAND_FEATS,
+        "max_hist_len": args.max_hist_len,
+        "dropout": args.dropout,
+    }
+
     # 2. Инициализация продвинутой модели
-    model = FeedRankingModel(
-        emb_dim=128,
-        d_model=args.hidden_dim,
-        nhead=args.nhead,
-        num_categories=args.num_categories,
-        num_cand_feats=5,
-        max_hist_len=args.max_hist_len,
-        dropout=args.dropout,
-    ).to(device)
+    model = FeedRankingModel(**model_config).to(device)
 
     total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"Параметров модели: {total_params:,}")
+    print(f"Параметров модели: {total_params:,} (входных числовых фичей: {NUM_CAND_FEATS})")
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode="max",
+        factor=0.5,
+        patience=args.lr_patience,
+        min_lr=1e-6,
+    )
 
-    # 3. Начальная оценка до обучения (Zero-shot)
+    # 3. Начальная оценка до обучения
     init_metrics = evaluate_ndcg(model, val_loader, device)
-    print(f"Initial Val NDCG (без обучения): full={init_metrics['ndcg_full']:.4f} | idcg30={init_metrics['ndcg_idcg30']:.4f} | @30={init_metrics['ndcg@30']:.4f}")
+    print(
+        f"Initial Val NDCG (без обучения): full={init_metrics['ndcg_full']:.4f} | "
+        f"idcg30={init_metrics['ndcg_idcg30']:.4f} | @30={init_metrics['ndcg@30']:.4f}"
+    )
 
     best_ndcg = -1.0
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # 4. Цикл обучения
+    # 4. Цикл обучения с EarlyStopping
     global_step = 0
+    patience_counter = 0
     total_start = time.perf_counter()
 
     for epoch in range(1, args.epochs + 1):
@@ -182,7 +194,6 @@ def train(args: argparse.Namespace) -> None:
                 if isinstance(v, torch.Tensor):
                     batch[k] = v.to(device, non_blocking=True)
 
-            # На train включаем position bias, если доступно
             total_scores, _ = model(batch, use_pos_bias=args.use_pos_bias)
             cand_mask = batch["candidate_mask"]
             target = batch["target"]
@@ -202,41 +213,57 @@ def train(args: argparse.Namespace) -> None:
             global_step += 1
 
             if global_step % args.log_every == 0 or (batch_idx + 1) == len(train_loader):
+                cur_lr = optimizer.param_groups[0]["lr"]
                 print(
-                    f"Epoch [{epoch}/{args.epochs}] | Step {batch_idx + 1:3d}/{len(train_loader)} | "
-                    f"Train Loss: {loss_val:.4f} (avg: {np.mean(epoch_losses):.4f})"
+                    f"Epoch [{epoch:2d}/{args.epochs}] | Step {batch_idx + 1:3d}/{len(train_loader)} | "
+                    f"Train Loss: {loss_val:.4f} (avg: {np.mean(epoch_losses):.4f}) | lr: {cur_lr:.2e}"
                 )
 
         epoch_duration = time.perf_counter() - epoch_start
         train_throughput = len(train_dataset) / max(epoch_duration, 1e-6)
 
-        # Валидация после эпохи (чистый контентный скор)
+        # Валидация после эпохи
         val_metrics = evaluate_ndcg(model, val_loader, device)
         cur_ndcg = val_metrics["ndcg_full"]
+
+        # Шаг шедулера по валидационному NDCG
+        scheduler.step(cur_ndcg)
+        cur_lr = optimizer.param_groups[0]["lr"]
 
         is_best = cur_ndcg > best_ndcg
         ckpt_data = {
             "epoch": epoch,
+            "model_config": model_config,
             "model_state": model.state_dict(),
             "optimizer_state": optimizer.state_dict(),
+            "best_ndcg": best_ndcg,
             "val_ndcg": cur_ndcg,
             "metrics": val_metrics,
+            "args": vars(args),
         }
         torch.save(ckpt_data, out_dir / "last_model.pt")
 
         if is_best:
             best_ndcg = cur_ndcg
+            patience_counter = 0
             torch.save(ckpt_data, out_dir / "best_model.pt")
+        else:
+            patience_counter += 1
 
-        print("-" * 70)
+        print("-" * 75)
         print(
             f"--> Конец Эпохи {epoch} ({epoch_duration:.2f}с, {train_throughput:.1f} лент/сек) | "
-            f"Val NDCG (unbiased): full={val_metrics['ndcg_full']:.4f} | "
+            f"Val NDCG: full={val_metrics['ndcg_full']:.4f} | "
             f"idcg30={val_metrics['ndcg_idcg30']:.4f} | "
             f"@30={val_metrics['ndcg@30']:.4f} "
-            f"{'(* NEW BEST *)' if is_best else ''}"
+            f"{'(* NEW BEST *)' if is_best else f'(patience: {patience_counter}/{args.patience})'}"
         )
-        print("-" * 70)
+        print("-" * 75)
+
+        # Early Stopping
+        if patience_counter >= args.patience:
+            print(f"\n[EarlyStopping] NDCG не улучшался {args.patience} эпох. Остановка обучения!")
+            break
 
     total_time = time.perf_counter() - total_start
     print(f"\n[DONE] Обучение завершено за {total_time:.2f}с. Лучший Val NDCG(full): {best_ndcg:.4f}")
@@ -245,13 +272,17 @@ def train(args: argparse.Namespace) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Обучение продвинутой нейросети ранжирования Avito")
-    parser.add_argument("--data", default="data/synth", help="Путь к корню данных (train/val)")
-    parser.add_argument("--out", default="models/nn/transformer_debias", help="Папка чекпоинта")
-    parser.add_argument("--epochs", type=int, default=3)
+    parser.add_argument("--data", default="data/synth", help="Путь к корню данных")
+    parser.add_argument("--train-split", default="train", help="Имя сплита для train")
+    parser.add_argument("--val-split", default="val", help="Имя сплита для val")
+    parser.add_argument("--out", default="models/nn/run_prod", help="Папка чекпоинта")
+    parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--lr-patience", type=int, default=2, help="Patience для ReduceLROnPlateau")
+    parser.add_argument("--patience", type=int, default=3, help="Early stopping patience")
     parser.add_argument("--weight-decay", type=float, default=1e-4)
-    parser.add_argument("--dropout", type=float, default=0.1)
+    parser.add_argument("--dropout", type=float, default=0.15)
     parser.add_argument("--hidden-dim", type=int, default=128)
     parser.add_argument("--nhead", type=int, default=4)
     parser.add_argument("--num-categories", type=int, default=1000)

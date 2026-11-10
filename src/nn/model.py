@@ -120,7 +120,7 @@ class CandidateEncoder(nn.Module):
         self,
         d_model: int = 128,
         num_categories: int = 1000,
-        num_cand_feats: int = 5,
+        num_cand_feats: int = 15,
         dropout: float = 0.1,
     ) -> None:
         super().__init__()
@@ -164,10 +164,10 @@ class FeedRankingModel(nn.Module):
         d_model: int = 128,
         nhead: int = 4,
         num_categories: int = 1000,
-        num_cand_feats: int = 5,
+        num_cand_feats: int = 15,
         max_hist_len: int = 256,
         max_position: int = 100,
-        dropout: float = 0.1,
+        dropout: float = 0.15,
     ) -> None:
         super().__init__()
         self.d_model = d_model
@@ -210,10 +210,13 @@ class FeedRankingModel(nn.Module):
         head_in_dim = d_model * 3 + 3 + 1 + num_cand_feats
         self.main_head = nn.Sequential(
             nn.Linear(head_in_dim, d_model),
+            nn.LayerNorm(d_model),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(d_model, 64),
+            nn.LayerNorm(64),
             nn.ReLU(),
+            nn.Dropout(dropout),
             nn.Linear(64, 1),
         )
 

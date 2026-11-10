@@ -19,18 +19,37 @@ FLOAT_FEATS = ["f1", "f2", "f3", "f4", "f5"]
 
 
 def list_parts(data_root: str | Path, split: str) -> list[Path]:
-    parts = sorted((Path(data_root) / split / "impressions").glob("part-*.parquet"))
+    impressions_dir = Path(data_root) / split / "impressions"
+    parts = sorted(impressions_dir.glob("part-*.parquet"))
     if not parts:
-        raise FileNotFoundError(f"нет part-*.parquet в {data_root}/{split}/impressions")
+        # Резервный поиск любых .parquet файлов в impressions, если они названы иначе
+        parts = sorted(impressions_dir.glob("*.parquet"))
+    if not parts:
+        # Резервный поиск, если parquet лежат прямо в папке split
+        parts = sorted((Path(data_root) / split).glob("*.parquet"))
+    if not parts:
+        raise FileNotFoundError(f"нет .parquet в {impressions_dir} или {Path(data_root) / split}")
     return parts
 
 
 def load_embeddings(data_root: str | Path, split: str) -> np.memmap:
+    # 1. Сначала проверяем путь внутри конкретного split
     d = Path(data_root) / split / "item_embeddings"
+    if not (d / "data.meta").exists():
+        # 2. Проверяем общий путь на уровне корня data_root / item_embeddings
+        root_d = Path(data_root) / "item_embeddings"
+        if (root_d / "data.meta").exists():
+            d = root_d
+        elif (Path(data_root) / "train" / "item_embeddings" / "data.meta").exists():
+            # 3. Резерв: использование item_embeddings из train для val/test
+            d = Path(data_root) / "train" / "item_embeddings"
+        else:
+            raise FileNotFoundError(f"data.meta не найден ни в {d}, ни в {root_d}")
+
     meta = json.loads((d / "data.meta").read_text())
     return np.memmap(
         d / "data.memmap", dtype=meta["dtype"], mode="r",
-        shape=tuple(meta["shape"]), order=meta["order"],
+        shape=tuple(meta["shape"]), order=meta.get("order", "C"),
     )
 
 
