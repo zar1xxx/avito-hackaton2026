@@ -62,6 +62,10 @@ def main() -> None:
     parser.add_argument("--finetune-epochs", type=int, default=3, help="Число эпох дообучения на train+val")
     parser.add_argument("--batch-size", type=int, default=64, help="Размер батча")
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate для базового обучения")
+    parser.add_argument("--scheduler", choices=["plateau", "cosine"], default="plateau")
+    parser.add_argument("--warmup-epochs", type=int, default=0)
+    parser.add_argument("--cv-mode", choices=["danya", "simple"], default="danya")
+    parser.add_argument("--amp", action="store_true", default=False, help="Включить AMP (для GPU)")
     parser.add_argument("--finetune-lr", type=float, default=2e-4, help="Learning rate для fine-tuning")
     parser.add_argument("--val-weight", type=float, default=2.0, help="Вес val-сэмплов при дообучении")
     parser.add_argument("--mixup-alpha", type=float, default=0.0, help="Alpha для MixUp (0 = выкл)")
@@ -121,6 +125,9 @@ def main() -> None:
         "--epochs", str(args.epochs),
         "--batch-size", str(args.batch_size),
         "--lr", str(args.lr),
+        "--scheduler", args.scheduler,
+        "--warmup-epochs", str(args.warmup_epochs),
+        "--cv-mode", args.cv_mode,
         "--patience", str(args.patience),
         "--mixup-alpha", str(args.mixup_alpha),
         "--temperature", str(args.temperature),
@@ -128,6 +135,8 @@ def main() -> None:
         "--seed", str(args.seed),
         "--out", str(base_dir),
     ]
+    if args.amp:
+        cmd_train.append("--amp")
     if args.max_parts is not None:
         cmd_train.extend(["--max-parts", str(args.max_parts)])
     if args.max_feeds is not None:
@@ -151,6 +160,8 @@ def main() -> None:
         "--num-workers", str(args.num_workers),
         "--out", str(ft_dir),
     ]
+    if args.amp:
+        cmd_finetune.append("--amp")
     if args.max_parts is not None:
         cmd_finetune.extend(["--max-parts", str(args.max_parts)])
     if args.max_feeds is not None:

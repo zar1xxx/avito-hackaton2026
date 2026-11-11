@@ -10,6 +10,8 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import math
 import os
 import random
 import sys
@@ -78,6 +80,44 @@ def apply_in_feed_mixup(batch: dict[str, torch.Tensor], alpha: float) -> dict[st
     return batch
 
 
+def get_amp_tools(use_amp: bool):
+    """Возвращает (autocast_factory, GradScaler) с поддержкой PyTorch 2.x и CPU fallback."""
+    if not use_amp:
+        return lambda: contextlib.nullcontext(), None
+
+    if hasattr(torch, "amp") and hasattr(torch.amp, "GradScaler"):
+        return (
+            lambda: torch.amp.autocast("cuda", enabled=True),
+            torch.amp.GradScaler("cuda", enabled=True),
+        )
+    return (
+        lambda: torch.cuda.amp.autocast(enabled=True),
+        torch.cuda.amp.GradScaler(enabled=True),
+    )
+
+
+def build_cosine_warmup_scheduler(
+    optimizer: torch.optim.Optimizer,
+    total_steps: int,
+    warmup_steps: int,
+    min_lr: float,
+    base_lr: float,
+) -> torch.optim.lr_scheduler.LambdaLR:
+    """Линейный прогрев (Warmup) + плавное Cosine Annealing затухание LR по шагам."""
+    min_ratio = min_lr / max(base_lr, 1e-12)
+
+    def lr_lambda(step: int) -> float:
+        if warmup_steps > 0 and step < warmup_steps:
+            # Начинаем с 0.05 * lr и линейно растем до 1.0 * lr
+            return 0.05 + 0.95 * (float(step + 1) / float(warmup_steps))
+        progress = float(step - warmup_steps) / float(max(total_steps - warmup_steps, 1))
+        progress = min(max(progress, 0.0), 1.0)
+        cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+        return min_ratio + (1.0 - min_ratio) * cosine
+
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+
 def listnet_loss(
     logits: torch.Tensor,
     targets: torch.Tensor,
@@ -85,12 +125,12 @@ def listnet_loss(
     logit_temperature: float = 1.0,
     target_temperature: float = 1.0,
 ) -> torch.Tensor:
-    """ListNet ranking loss с Temperature Scaling и маскированием паддингов."""
-    scaled_logits = logits / max(logit_temperature, 1e-5)
+    """ListNet ranking loss с Temperature Scaling и маскированием паддингов (считается в float32)."""
+    scaled_logits = logits.float() / max(logit_temperature, 1e-5)
     masked_logits = scaled_logits.masked_fill(~mask, -1e9)
     pred_log_probs = F.log_softmax(masked_logits, dim=-1)
 
-    scaled_targets = (targets * 3.0) / max(target_temperature, 1e-5)
+    scaled_targets = (targets.float() * 3.0) / max(target_temperature, 1e-5)
     masked_targets = scaled_targets.masked_fill(~mask, -1e9)
     true_probs = F.softmax(masked_targets, dim=-1)
 
@@ -99,12 +139,12 @@ def listnet_loss(
     has_candidates = mask.any(dim=-1)
     if has_candidates.any():
         return feed_loss[has_candidates].mean()
-    return logits.sum() * 0.0
+    return logits.sum().float() * 0.0
 
 
 def masked_bce_loss(logits: torch.Tensor, targets: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-    """Binary Cross Entropy с маскированием паддингов."""
-    bce = F.binary_cross_entropy_with_logits(logits, targets, reduction="none")
+    """Binary Cross Entropy с маскированием паддингов (в float32 для стабильности AMP)."""
+    bce = F.binary_cross_entropy_with_logits(logits.float(), targets.float(), reduction="none")
     mask_f = mask.float()
     return (bce * mask_f).sum() / torch.clamp(mask_f.sum(), min=1.0)
 
@@ -115,9 +155,11 @@ def evaluate_ndcg(
     val_loader: DataLoader,
     device: torch.device,
     cv_mode: str = "danya",
+    use_amp: bool = False,
 ) -> dict[str, float]:
     """Считает метрики NDCG по валидационному датасету (включая pseudo-public/private)."""
     model.eval()
+    autocast_ctx, _ = get_amp_tools(use_amp)
     all_feed_ids = []
     all_targets = []
     all_scores = []
@@ -128,7 +170,8 @@ def evaluate_ndcg(
             if isinstance(v, torch.Tensor):
                 batch[k] = v.to(device, non_blocking=True)
 
-        _, main_scores = model(batch, use_pos_bias=False)
+        with autocast_ctx():
+            _, main_scores = model(batch, use_pos_bias=False)
         mask = batch["candidate_mask"]
 
         if "target" not in batch or batch["target"] is None:
@@ -198,11 +241,18 @@ def train(args: argparse.Namespace) -> float:
     temperature = getattr(args, "temperature", 1.0)
     use_set_attention = getattr(args, "use_set_attention", True)
     cv_mode = getattr(args, "cv_mode", "danya")
+    scheduler_type = getattr(args, "scheduler", "plateau")
+    warmup_epochs = getattr(args, "warmup_epochs", 0)
+    min_lr = getattr(args, "min_lr", 1e-6)
+    amp_requested = getattr(args, "amp", False)
+    use_amp = bool(amp_requested and device.type == "cuda")
 
     print("=" * 75)
-    print(f"Запуск обучения: {args.data} | Device: {device} | Loss: {args.loss} (T={temperature}) | Seed: {seed}")
-    print(f"Сплиты: train='{args.train_split}', val='{args.val_split}' | CV Mode: {cv_mode} | MixUp: {mixup_alpha}")
-    print(f"Debias: {'ВКЛЮЧЕН' if args.use_pos_bias else 'ОТКЛЮЧЕН'} | Set-Attention: {'ВКЛЮЧЕН' if use_set_attention else 'ОТКЛЮЧЕН'} | Patience: {args.patience}")
+    print(f"Запуск обучения: {args.data} | Device: {device} | AMP: {'ON' if use_amp else 'OFF'} | Loss: {args.loss} (T={temperature}) | Seed: {seed}")
+    if amp_requested and not use_amp:
+        print("[INFO] Флаг --amp передан, но GPU недоступен (CPU режим) — AMP отключен.")
+    print(f"Сплиты: train='{args.train_split}', val='{args.val_split}' | CV: {cv_mode} | Scheduler: {scheduler_type} (warmup={warmup_epochs}ep)")
+    print(f"Debias: {'ВКЛ' if args.use_pos_bias else 'ВЫКЛ'} | Set-Attention: {'ВКЛ' if use_set_attention else 'ВЫКЛ'} | MixUp: {mixup_alpha} | Patience: {args.patience}")
     print("=" * 75)
 
     # 1. Загрузка данных
@@ -263,16 +313,29 @@ def train(args: argparse.Namespace) -> float:
     print(f"Параметров модели: {total_params:,} (входных числовых фичей: {NUM_CAND_FEATS})")
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer,
-        mode="max",
-        factor=0.5,
-        patience=args.lr_patience,
-        min_lr=1e-6,
-    )
+    if scheduler_type == "cosine":
+        total_steps = args.epochs * max(len(train_loader), 1)
+        warmup_steps = max(warmup_epochs, 0) * max(len(train_loader), 1)
+        scheduler = build_cosine_warmup_scheduler(
+            optimizer=optimizer,
+            total_steps=total_steps,
+            warmup_steps=warmup_steps,
+            min_lr=min_lr,
+            base_lr=args.lr,
+        )
+    else:
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode="max",
+            factor=0.5,
+            patience=args.lr_patience,
+            min_lr=min_lr,
+        )
+
+    autocast_ctx, scaler = get_amp_tools(use_amp)
 
     # 3. Начальная оценка до обучения
-    init_metrics = evaluate_ndcg(model, val_loader, device, cv_mode=cv_mode)
+    init_metrics = evaluate_ndcg(model, val_loader, device, cv_mode=cv_mode, use_amp=use_amp)
     init_target = init_metrics["ndcg_private"] if cv_mode == "danya" else init_metrics["ndcg_full"]
     print(
         f"Initial Val NDCG (без обучения): priv={init_metrics['ndcg_private']:.4f} | "
@@ -290,7 +353,7 @@ def train(args: argparse.Namespace) -> float:
         f.write(
             f"0,NaN,{init_metrics['ndcg_full']:.5f},{init_metrics['ndcg_public']:.5f},"
             f"{init_metrics['ndcg_private']:.5f},{init_metrics['ndcg_idcg30']:.5f},"
-            f"{init_metrics['ndcg@30']:.5f},{args.lr:.2e},0.0,{init_target:.5f}\n"
+            f"{init_metrics['ndcg@30']:.5f},{optimizer.param_groups[0]['lr']:.2e},0.0,{init_target:.5f}\n"
         )
 
     # 4. Цикл обучения с EarlyStopping
@@ -311,19 +374,31 @@ def train(args: argparse.Namespace) -> float:
             if mixup_alpha > 0.0:
                 batch = apply_in_feed_mixup(batch, mixup_alpha)
 
-            total_scores, _ = model(batch, use_pos_bias=args.use_pos_bias)
-            cand_mask = batch["candidate_mask"]
-            target = batch["target"]
-
-            if args.loss == "listnet":
-                loss = listnet_loss(total_scores, target, cand_mask, logit_temperature=temperature)
-            else:
-                loss = masked_bce_loss(total_scores, target, cand_mask)
-
             optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
+
+            with autocast_ctx():
+                total_scores, _ = model(batch, use_pos_bias=args.use_pos_bias)
+                cand_mask = batch["candidate_mask"]
+                target = batch["target"]
+
+                if args.loss == "listnet":
+                    loss = listnet_loss(total_scores, target, cand_mask, logit_temperature=temperature)
+                else:
+                    loss = masked_bce_loss(total_scores, target, cand_mask)
+
+            if use_amp and scaler is not None:
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                optimizer.step()
+
+            if scheduler_type == "cosine":
+                scheduler.step()
 
             loss_val = loss.item()
             epoch_losses.append(loss_val)
@@ -340,11 +415,12 @@ def train(args: argparse.Namespace) -> float:
         train_throughput = len(train_dataset) / max(epoch_duration, 1e-6)
 
         # Валидация после эпохи
-        val_metrics = evaluate_ndcg(model, val_loader, device, cv_mode=cv_mode)
+        val_metrics = evaluate_ndcg(model, val_loader, device, cv_mode=cv_mode, use_amp=use_amp)
         cur_ndcg = val_metrics["ndcg_private"] if cv_mode == "danya" else val_metrics["ndcg_full"]
 
-        # Шаг шедулера по целевому валидационному NDCG (pseudo-private при cv_mode='danya')
-        scheduler.step(cur_ndcg)
+        # Шаг шедулера ReduceLROnPlateau (для cosine шаг делается по батчам)
+        if scheduler_type == "plateau":
+            scheduler.step(cur_ndcg)
         cur_lr = optimizer.param_groups[0]["lr"]
 
         is_best = cur_ndcg > best_ndcg
@@ -408,6 +484,9 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--min-lr", type=float, default=1e-6, help="Минимальный LR для шедулера")
+    parser.add_argument("--scheduler", choices=["plateau", "cosine"], default="plateau", help="Тип LR шедулера")
+    parser.add_argument("--warmup-epochs", type=int, default=0, help="Число эпох линейного прогрева (для cosine)")
     parser.add_argument("--lr-patience", type=int, default=2, help="Patience для ReduceLROnPlateau")
     parser.add_argument("--patience", type=int, default=3, help="Early stopping patience")
     parser.add_argument("--weight-decay", type=float, default=1e-4)
@@ -429,6 +508,7 @@ def main() -> None:
     parser.add_argument("--log-every", type=int, default=5)
     parser.add_argument("--cv-mode", choices=["danya", "simple"], default="danya", help="Режим валидации: 'danya' (pseudo-public 30% / pseudo-private 70% по timestamp) или 'simple'")
     parser.add_argument("--seed", type=int, default=42, help="Seed для воспроизводимости")
+    parser.add_argument("--amp", action="store_true", default=False, help="Использовать Automatic Mixed Precision (только на GPU)")
     parser.add_argument("--device", default=None)
     args = parser.parse_args()
 

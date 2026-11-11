@@ -350,9 +350,9 @@ class FeedRankingModel(nn.Module):
         else:
             total_scores = main_scores
 
-        # Маскируем паддинги большим отрицательным значением
-        total_scores = total_scores.masked_fill(~cand_mask, -1e9)
-        main_scores = main_scores.masked_fill(~cand_mask, -1e9)
+        # Маскируем паддинги большим отрицательным значением (в float32 для совместимости с AMP/fp16)
+        total_scores = total_scores.float().masked_fill(~cand_mask, -1e9)
+        main_scores = main_scores.float().masked_fill(~cand_mask, -1e9)
 
         if return_features:
             feats_dict = {

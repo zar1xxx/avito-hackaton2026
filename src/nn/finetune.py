@@ -33,6 +33,7 @@ from src.nn.dataset import (
     collate_ranking_batch,
 )
 from src.nn.model import FeedRankingModel
+from src.nn.train import get_amp_tools
 
 
 class WeightedCombinedDataset(Dataset):
@@ -73,11 +74,11 @@ def weighted_listnet_loss(
     weights: torch.Tensor | None = None,
     target_temperature: float = 1.0,
 ) -> torch.Tensor:
-    """Взвешенный ListNet loss: учитывает вес каждой ленты (например, повышенный вес val)."""
-    masked_logits = logits.masked_fill(~mask, -1e9)
+    """Взвешенный ListNet loss: учитывает вес каждой ленты (считается в float32)."""
+    masked_logits = logits.float().masked_fill(~mask, -1e9)
     pred_log_probs = F.log_softmax(masked_logits, dim=-1)
 
-    scaled_targets = (targets * 3.0) / target_temperature
+    scaled_targets = (targets.float() * 3.0) / target_temperature
     masked_targets = scaled_targets.masked_fill(~mask, -1e9)
     true_probs = F.softmax(masked_targets, dim=-1)
 
@@ -85,11 +86,11 @@ def weighted_listnet_loss(
 
     has_candidates = mask.any(dim=-1)
     if not has_candidates.any():
-        return logits.sum() * 0.0
+        return logits.sum().float() * 0.0
 
     if weights is not None:
-        valid_losses = feed_loss[has_candidates] * weights[has_candidates]
-        return valid_losses.sum() / torch.clamp(weights[has_candidates].sum(), min=1e-5)
+        valid_losses = feed_loss[has_candidates] * weights[has_candidates].float()
+        return valid_losses.sum() / torch.clamp(weights[has_candidates].float().sum(), min=1e-5)
     else:
         return feed_loss[has_candidates].mean()
 
@@ -99,9 +100,11 @@ def evaluate_ndcg(
     model: nn.Module,
     val_loader: DataLoader,
     device: torch.device,
+    use_amp: bool = False,
 ) -> dict[str, float]:
     """Валидация NDCG по отложенной выборке (без position bias)."""
     model.eval()
+    autocast_ctx, _ = get_amp_tools(use_amp)
     all_feed_ids = []
     all_targets = []
     all_scores = []
@@ -111,7 +114,8 @@ def evaluate_ndcg(
             if isinstance(v, torch.Tensor):
                 batch[k] = v.to(device, non_blocking=True)
 
-        _, main_scores = model(batch, use_pos_bias=False)
+        with autocast_ctx():
+            _, main_scores = model(batch, use_pos_bias=False)
         mask = batch["candidate_mask"]
 
         if "target" not in batch or batch["target"] is None:
@@ -137,9 +141,14 @@ def evaluate_ndcg(
 
 def finetune(args: argparse.Namespace) -> None:
     device = torch.device(args.device if args.device else ("cuda" if torch.cuda.is_available() else "cpu"))
+    amp_requested = getattr(args, "amp", False)
+    use_amp = bool(amp_requested and device.type == "cuda")
+
     print("=" * 75)
     print(" ЗАПУСК FINE-TUNING (TRAIN + VAL)")
-    print(f"Device: {device} | Base Model: {args.model}")
+    print(f"Device: {device} | AMP: {'ON' if use_amp else 'OFF'} | Base Model: {args.model}")
+    if amp_requested and not use_amp:
+        print("[INFO] Флаг --amp передан, но GPU недоступен (CPU режим) — AMP отключен.")
     print(f"Val Weight: {args.val_weight}x | Fine-tuning LR: {args.lr:.2e}")
     print("=" * 75)
 
@@ -210,10 +219,12 @@ def finetune(args: argparse.Namespace) -> None:
         min_lr=1e-6,
     )
 
+    autocast_ctx, scaler = get_amp_tools(use_amp)
+
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    init_metrics = evaluate_ndcg(model, val_loader, device)
+    init_metrics = evaluate_ndcg(model, val_loader, device, use_amp=use_amp)
     print(f"Initial Val NDCG до дообучения: full={init_metrics['ndcg_full']:.4f} | @30={init_metrics['ndcg@30']:.4f}")
 
     best_ndcg = init_metrics["ndcg_full"]
@@ -235,23 +246,32 @@ def finetune(args: argparse.Namespace) -> None:
                 if isinstance(v, torch.Tensor):
                     batch[k] = v.to(device, non_blocking=True)
 
-            # На train включаем debias, но если в батче лента из val (где pos нет), голова pos не активна
-            total_scores, _ = model(batch, use_pos_bias=True)
-            cand_mask = batch["candidate_mask"]
-            target = batch["target"]
-            weights = batch.get("sample_weight")
-
-            loss = weighted_listnet_loss(total_scores, target, cand_mask, weights=weights)
-
             optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
+
+            with autocast_ctx():
+                # На train включаем debias, но если в батче лента из val (где pos нет), голова pos не активна
+                total_scores, _ = model(batch, use_pos_bias=True)
+                cand_mask = batch["candidate_mask"]
+                target = batch["target"]
+                weights = batch.get("sample_weight")
+
+                loss = weighted_listnet_loss(total_scores, target, cand_mask, weights=weights)
+
+            if use_amp and scaler is not None:
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                optimizer.step()
 
             epoch_losses.append(loss.item())
 
         epoch_duration = time.perf_counter() - epoch_start
-        val_metrics = evaluate_ndcg(model, val_loader, device)
+        val_metrics = evaluate_ndcg(model, val_loader, device, use_amp=use_amp)
         cur_ndcg = val_metrics["ndcg_full"]
         scheduler.step(cur_ndcg)
 
@@ -314,6 +334,7 @@ def main() -> None:
     parser.add_argument("--max-parts", type=int, default=None)
     parser.add_argument("--max-feeds", type=int, default=None)
     parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument("--amp", action="store_true", default=False, help="Использовать AMP (только на GPU)")
     parser.add_argument("--device", default=None)
     args = parser.parse_args()
 
