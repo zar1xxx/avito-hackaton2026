@@ -15,7 +15,10 @@ import polars as pl
 
 
 def position_ctr(pos: np.ndarray, target: np.ndarray, smooth: int = 5, min_count: int = 30) -> np.ndarray:
-    d = pl.DataFrame({"pos": pos, "t": target}).drop_nulls("pos").filter(pl.col("pos") >= 0)
+    # pos с пропусками приходит из numpy как float с NaN: убираем NaN/null и возвращаем целые
+    d = (pl.DataFrame({"pos": np.asarray(pos, dtype=np.float64), "t": target})
+         .filter(pl.col("pos").is_not_null() & pl.col("pos").is_not_nan() & (pl.col("pos") >= 0))
+         .with_columns(pl.col("pos").cast(pl.Int64)))
     g = d.group_by("pos").agg(pl.col("t").mean().alias("ctr"), pl.len().alias("n")).sort("pos")
     maxp = int(g["pos"].max())
     ctr = np.full(maxp + 1, np.nan)

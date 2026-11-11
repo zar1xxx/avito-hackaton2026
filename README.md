@@ -40,7 +40,8 @@ python -m src.gbdt.train predict --data /path/to/competition \
     --model runs/gbdt-01/model.cbm --out runs/gbdt-01/submission.parquet
 python scripts/validate_submission.py /path/to/competition/sample_submission.parquet runs/gbdt-01/submission.parquet
 ```
-Быстрая проверка на синтетике: `python eval/make_synthetic.py --out /tmp/synth` и тот же запуск с `--data /tmp/synth`.
+Синтетика для отладки (формат соревнования, смещение позиции в train, несколько частей; НЕ данные Авито):
+`python eval/make_synthetic.py --out data/synth --feeds 20000 --parts 4` и тот же запуск с `--data data/synth`.
 GPU: `--task-type GPU`. Для быстрых экспериментов: `--max-parts 2`.
 
 ## Формат общих артефактов
