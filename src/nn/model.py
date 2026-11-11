@@ -343,9 +343,11 @@ class FeedRankingModel(nn.Module):
 
         # 7. Positional Debias Tower
         if use_pos_bias and "pos" in batch and batch["pos"] is not None:
-            pos_indices = torch.clamp(batch["pos"], 0, self.pos_bias_emb.num_embeddings - 1)
+            raw_pos = batch["pos"]
+            pos_valid = (raw_pos >= 0).to(main_scores.dtype)
+            pos_indices = torch.clamp(raw_pos, 0, self.pos_bias_emb.num_embeddings - 1)
             pos_emb = self.pos_bias_emb(pos_indices) # [B, M, 32]
-            pos_bias = self.pos_bias_head(pos_emb).squeeze(-1) # [B, M]
+            pos_bias = self.pos_bias_head(pos_emb).squeeze(-1) * pos_valid # [B, M]
             total_scores = main_scores + pos_bias
         else:
             total_scores = main_scores

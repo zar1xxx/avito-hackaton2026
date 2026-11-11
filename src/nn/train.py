@@ -30,7 +30,12 @@ from torch.utils.data import DataLoader
 
 from src.common.cv import mask_feeds, pseudo_split
 from src.common.metric import all_variants, mean_ndcg
-from src.nn.dataset import NUM_CAND_FEATS, FeedRankingDataset, collate_ranking_batch
+from src.nn.dataset import (
+    NUM_CAND_FEATS,
+    FeedRankingDataset,
+    ShardedFeedRankingDataset,
+    collate_ranking_batch,
+)
 from src.nn.model import FeedRankingModel
 
 
@@ -246,6 +251,7 @@ def train(args: argparse.Namespace) -> float:
     min_lr = getattr(args, "min_lr", 1e-6)
     amp_requested = getattr(args, "amp", False)
     use_amp = bool(amp_requested and device.type == "cuda")
+    sharded_loader = getattr(args, "sharded_loader", True)
 
     print("=" * 75)
     print(f"Запуск обучения: {args.data} | Device: {device} | AMP: {'ON' if use_amp else 'OFF'} | Loss: {args.loss} (T={temperature}) | Seed: {seed}")
@@ -256,43 +262,80 @@ def train(args: argparse.Namespace) -> float:
     print("=" * 75)
 
     # 1. Загрузка данных
-    train_dataset = FeedRankingDataset(
-        data_root=args.data,
-        split=args.train_split,
-        max_parts=args.max_parts,
-        max_feeds=args.max_feeds,
-        max_hist_len=args.max_hist_len,
-    )
-    val_dataset = FeedRankingDataset(
-        data_root=args.data,
-        split=args.val_split,
-        max_parts=args.max_parts,
-        max_feeds=args.max_feeds // 3 if args.max_feeds else None,
-        max_hist_len=args.max_hist_len,
-    )
+    if sharded_loader:
+        train_dataset = ShardedFeedRankingDataset(
+            data_root=args.data,
+            split=args.train_split,
+            max_parts=args.max_parts,
+            max_feeds=args.max_feeds,
+            max_hist_len=args.max_hist_len,
+            shuffle=True,
+            seed=seed,
+        )
+        val_dataset = ShardedFeedRankingDataset(
+            data_root=args.data,
+            split=args.val_split,
+            max_parts=args.max_parts,
+            max_feeds=args.max_feeds // 3 if args.max_feeds else None,
+            max_hist_len=args.max_hist_len,
+            shuffle=False,
+            seed=seed,
+        )
+    else:
+        train_dataset = FeedRankingDataset(
+            data_root=args.data,
+            split=args.train_split,
+            max_parts=args.max_parts,
+            max_feeds=args.max_feeds,
+            max_hist_len=args.max_hist_len,
+        )
+        val_dataset = FeedRankingDataset(
+            data_root=args.data,
+            split=args.val_split,
+            max_parts=args.max_parts,
+            max_feeds=args.max_feeds // 3 if args.max_feeds else None,
+            max_hist_len=args.max_hist_len,
+        )
 
-    print(f"Train лент: {len(train_dataset)}, Val лент: {len(val_dataset)}")
+    loader_label = "Sharded (Polars)" if sharded_loader else "Map-style"
+    print(f"Loader: {loader_label} | Train лент: {len(train_dataset)}, Val лент: {len(val_dataset)}")
 
     dl_generator = torch.Generator()
     dl_generator.manual_seed(seed)
 
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=args.batch_size,
-        shuffle=True,
-        generator=dl_generator,
-        collate_fn=collate_ranking_batch,
-        num_workers=args.num_workers,
-        pin_memory=(device.type == "cuda"),
-    )
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        collate_fn=collate_ranking_batch,
-        num_workers=args.num_workers,
-        pin_memory=(device.type == "cuda"),
-    )
+    if sharded_loader:
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=args.batch_size,
+            collate_fn=collate_ranking_batch,
+            num_workers=args.num_workers,
+            pin_memory=(device.type == "cuda"),
+        )
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=args.batch_size,
+            collate_fn=collate_ranking_batch,
+            num_workers=args.num_workers,
+            pin_memory=(device.type == "cuda"),
+        )
+    else:
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=args.batch_size,
+            shuffle=True,
+            generator=dl_generator,
+            collate_fn=collate_ranking_batch,
+            num_workers=args.num_workers,
+            pin_memory=(device.type == "cuda"),
+        )
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=args.batch_size,
+            shuffle=False,
+            collate_fn=collate_ranking_batch,
+            num_workers=args.num_workers,
+            pin_memory=(device.type == "cuda"),
+        )
 
     # Конфиг модели для сохранения в чекпоинт
     model_config = {
@@ -363,6 +406,8 @@ def train(args: argparse.Namespace) -> float:
     total_start = time.perf_counter()
 
     for epoch in range(1, args.epochs + 1):
+        if hasattr(train_dataset, "set_epoch"):
+            train_dataset.set_epoch(epoch)
         model.train()
         epoch_losses = []
         epoch_start = time.perf_counter()
@@ -513,6 +558,21 @@ def main() -> None:
     parser.add_argument("--cv-mode", choices=["danya", "simple"], default="danya", help="Режим валидации: 'danya' (pseudo-public 30% / pseudo-private 70% по timestamp) или 'simple'")
     parser.add_argument("--seed", type=int, default=42, help="Seed для воспроизводимости")
     parser.add_argument("--amp", action="store_true", default=False, help="Использовать Automatic Mixed Precision (только на GPU)")
+    parser.add_argument(
+        "--sharded-loader",
+        "--sharded_loader",
+        dest="sharded_loader",
+        action="store_true",
+        help="Использовать быстрый шардированный загрузчик на базе Polars (по умолчанию включен)",
+    )
+    parser.add_argument(
+        "--no-sharded-loader",
+        "--no_sharded_loader",
+        dest="sharded_loader",
+        action="store_false",
+        help="Использовать старый Map-style DataLoader (для отладки на синтетике)",
+    )
+    parser.set_defaults(sharded_loader=True)
     parser.add_argument("--device", default=None)
     args = parser.parse_args()
 

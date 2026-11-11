@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -18,12 +19,15 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import numpy as np
+import polars as pl
 import pytest
 import torch
 
 from src.nn.dataset import (
     EMB_DIM,
     NUM_CAND_FEATS,
+    FeedRankingDataset,
+    ShardedFeedRankingDataset,
     collate_ranking_batch,
     compute_candidate_features,
 )
@@ -272,3 +276,127 @@ def test_real_data_boundaries_and_clamp():
     assert total_scores.shape == (1, 300)
     # Проверяем, что pos=299 и pos=150 различаются (не схлопнуты на 100!)
     assert model.pos_bias_emb.num_embeddings == 512
+
+
+def _write_mini_sharded_split(split_dir: Path, num_parts: int = 3, rows_per_part: int = 4) -> None:
+    """Создает мини-сплит из нескольких parquet-партов и item_embeddings memmap."""
+    imp_dir = split_dir / "impressions"
+    emb_dir = split_dir / "item_embeddings"
+    imp_dir.mkdir(parents=True, exist_ok=True)
+    emb_dir.mkdir(parents=True, exist_ok=True)
+
+    rng = np.random.default_rng(123)
+    num_embs = 64
+    mm = np.memmap(emb_dir / "data.memmap", dtype="int8", mode="w+", shape=(num_embs, EMB_DIM))
+    mm[:] = rng.integers(-64, 64, size=(num_embs, EMB_DIM), dtype=np.int8)
+    mm.flush()
+    del mm
+    (emb_dir / "data.meta").write_text(
+        json.dumps({"dtype": "int8", "shape": [num_embs, EMB_DIM], "order": "C"}),
+        encoding="utf-8",
+    )
+
+    feed_id = 0
+    for p_idx in range(num_parts):
+        rows = []
+        for r_idx in range(rows_per_part):
+            m = 4 + (feed_id % 3)
+            h = 3 if feed_id % 2 == 0 else 0
+            # В одном из рядов pos=None для проверки mixed/null pos
+            pos_val = None if (p_idx == 1 and r_idx == 0) else list(range(m))
+            rows.append(
+                {
+                    "feed_id": feed_id,
+                    "timestamp": 1000 + feed_id,
+                    "user_id": 500 + feed_id,
+                    "category_id": rng.integers(1, 20, size=m).tolist(),
+                    "f1": rng.normal(size=m).tolist(),
+                    "f2": rng.normal(size=m).tolist(),
+                    "f3": rng.normal(size=m).tolist(),
+                    "f4": rng.normal(size=m).tolist(),
+                    "f5": rng.normal(size=m).tolist(),
+                    "item_id__embedding_idx": [i if i % 3 != 0 else -1 for i in range(1, m + 1)],
+                    "item_id": np.arange(100, 100 + m).tolist(),
+                    "user_embedding": rng.integers(-30, 30, size=EMB_DIM).tolist(),
+                    "history__item_id": rng.integers(1, 50, size=h).tolist(),
+                    "history__category_id": rng.integers(1, 20, size=h).tolist(),
+                    "history__event_type": rng.integers(1, 5, size=h).tolist(),
+                    "history__event_source": rng.integers(0, 5, size=h).tolist(),
+                    "history__item_id__embedding_idx": rng.integers(0, num_embs, size=h).tolist(),
+                    "target": [1 if i == 0 else 0 for i in range(m)],
+                    "pos": pos_val,
+                }
+            )
+            feed_id += 1
+        df = pl.DataFrame(rows)
+        df.write_parquet(imp_dir / f"part-{p_idx:05d}.parquet")
+
+
+def test_sharded_loader_parity_and_shuffle(tmp_path: Path):
+    """Проверка эквивалентности ShardedFeedRankingDataset и Map-style FeedRankingDataset."""
+    _write_mini_sharded_split(tmp_path / "train", num_parts=3, rows_per_part=4)
+
+    map_ds = FeedRankingDataset(tmp_path, split="train")
+    sharded_det = ShardedFeedRankingDataset(tmp_path, split="train", shuffle=False)
+
+    assert len(sharded_det) == len(map_ds) == 12
+    map_samples = [map_ds[i] for i in range(len(map_ds))]
+    sharded_samples = list(sharded_det)
+    assert [s["feed_id"] for s in sharded_samples] == [s["feed_id"] for s in map_samples]
+
+    for ms, ss in zip(map_samples, sharded_samples):
+        assert np.allclose(ms["cand_features"], ss["cand_features"])
+        assert np.allclose(ms["cand_emb"], ss["cand_emb"])
+        assert np.array_equal(ms["cand_has_emb"], ss["cand_has_emb"])
+        assert np.array_equal(ms["target"], ss["target"])
+        if "pos" in ms:
+            assert np.array_equal(ms["pos"], ss["pos"])
+        else:
+            assert "pos" not in ss
+
+    # Проверка shuffle и set_epoch
+    sharded_rnd = ShardedFeedRankingDataset(tmp_path, split="train", shuffle=True, seed=42)
+    sharded_rnd.set_epoch(1)
+    ids_ep1 = [s["feed_id"] for s in sharded_rnd]
+    sharded_rnd.set_epoch(2)
+    ids_ep2 = [s["feed_id"] for s in sharded_rnd]
+
+    assert sorted(ids_ep1) == list(range(12))
+    assert sorted(ids_ep2) == list(range(12))
+    assert ids_ep1 != ids_ep2
+
+    # Проверка max_feeds
+    limited = ShardedFeedRankingDataset(tmp_path, split="train", max_feeds=5, shuffle=True, seed=42)
+    limited.set_epoch(1)
+    assert len(limited) == 5
+    assert len(list(limited)) == 5
+
+
+def test_mixed_pos_debias_masking(ranking_model):
+    """Проверка маскирования pos_bias при смешанном наличии pos (-1) в батче."""
+    import copy
+
+    s_with_pos = make_dummy_sample(feed_id=1, m=6, h=4, with_pos=True)
+    s_no_pos = make_dummy_sample(feed_id=2, m=6, h=4, with_pos=False)
+
+    batch = collate_ranking_batch([s_with_pos, s_no_pos])
+    assert "pos" in batch
+    assert (batch["pos"][0] >= 0).all()
+    assert (batch["pos"][1] == -1).all()
+
+    model = copy.deepcopy(ranking_model)
+    model.eval()
+    # Делаем большой pos_bias, чтобы сразу увидеть утечку при pos == -1
+    model.pos_bias_emb.weight.data.fill_(100.0)
+
+    with torch.no_grad():
+        total_with_pos, main_with_pos = model(batch, use_pos_bias=True)
+        total_no_bias, main_no_bias = model(batch, use_pos_bias=False)
+
+    assert torch.isfinite(total_with_pos).all()
+    assert torch.allclose(main_with_pos, main_no_bias, atol=1e-6)
+    # На сэмпле 0 pos >= 0 -> pos_bias ненулевой (одинаковый ненулевой сдвиг, т.к. weights=100)
+    bias_0 = total_with_pos[0] - main_with_pos[0]
+    assert torch.all(bias_0.abs() > 0.5)
+    # На сэмпле 1 pos == -1 -> pos_bias должен быть строго занулен!
+    assert torch.allclose(total_with_pos[1], total_no_bias[1], atol=1e-6)
