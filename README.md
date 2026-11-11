@@ -179,8 +179,9 @@ uv run --locked python -m scripts.reproduce_data --raw competition --resume --ba
 Команда проверяет и подготавливает все исходные таблицы, EDA-ноутбук в `runs/eda/`,
 разбиение val, общий каталог эмбеддингов и cosine-кеш для первого train-шарда,
 **всего val и всего test**. Подготовленные базовые таблицы при этом полные,
-все 512 train-шардов. Группа статистик внутри ленты также строится полностью
-в `data/features/infeed/`. Проверенный кеш переиспользуется; повреждённые файлы
+все 512 train-шардов. Статистики внутри ленты можно дополнительно построить
+через `--infeed data/features/infeed`; по умолчанию необязательная группа
+не вычисляется. Проверенный кеш переиспользуется; повреждённые файлы
 не считаются готовыми. Передача архивов и тяжёлых таблиц через Git не нужна.
 
 По умолчанию cosine-кеш соответствует небольшому проверочному прогону.
@@ -240,12 +241,18 @@ uv run --locked python -m scripts.build_similarity_features --train-parts 1 --re
 uv run --locked python -m scripts.build_infeed_features --prepared data/prepared --out data/features/infeed --resume
 ```
 
+Для быстрого сравнения на одном train-шарде, полном val и test:
+
+```powershell
+uv run --locked python -m scripts.build_infeed_features --prepared data/prepared --out data/features/infeed-check --train-parts 1 --resume
+```
+
 Параметр `--feature-root` можно повторять: группы соединяются по ключу
 конкретного вхождения кандидата, дубли имён признаков отклоняются. Сравнение
 cosine-модели с добавлением признаков внутри ленты:
 
 ```powershell
-uv run --locked python -m scripts.run_baseline_check --feature-root data/features/cosine --feature-root data/features/infeed --out runs/baseline-infeed-001
+uv run --locked python -m scripts.run_baseline_check --feature-root data/features/cosine --feature-root data/features/infeed-check --out runs/baseline-infeed-001
 uv run --locked python -m scripts.compare_baselines --baseline runs/baseline-cosine-001 --candidate runs/baseline-infeed-001 --out runs/baseline-infeed-001/comparison.json
 ```
 

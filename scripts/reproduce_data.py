@@ -53,7 +53,7 @@ def prepared_cache_valid(raw, prepared, eda):
 
 def reproduce(raw=Path('competition'), prepared=Path('data/prepared'), eda=Path('runs/eda'),
               catalogue=Path('data/embedding_catalogue'), features=Path('data/features/cosine'),
-              *, resume=False, feature_train_parts=1, infeed=Path('data/features/infeed'), baseline_out=None):
+              *, resume=False, feature_train_parts=1, infeed=None, baseline_out=None):
     if baseline_out is not None and Path(baseline_out).exists():
         raise FileExistsError('baseline output exists; choose a fresh --baseline-out directory')
     raw, prepared, eda, catalogue, features = (Path(path).resolve() for path in (raw, prepared, eda, catalogue, features))
@@ -76,7 +76,7 @@ def reproduce(raw=Path('competition'), prepared=Path('data/prepared'), eda=Path(
     build_features(raw, prepared, catalogue, features, train_parts=feature_train_parts, resume=resume)
     if infeed is not None:
         build_infeed_features(prepared, Path(infeed).resolve(), resume=resume)
-    print('Data, EDA, folds, catalogue, cosine and within-feed features are ready.', flush=True)
+    print('Data, EDA, folds, catalogue and requested feature groups are ready.', flush=True)
     if baseline_out is not None:
         from scripts.run_baseline_check import run
         # Keep the validated cosine model as the reproducible default. New
@@ -91,7 +91,7 @@ if __name__ == '__main__':
     parser.add_argument('--eda', type=Path, default=Path('runs/eda'))
     parser.add_argument('--catalogue', type=Path, default=Path('data/embedding_catalogue'))
     parser.add_argument('--features', type=Path, default=Path('data/features/cosine'))
-    parser.add_argument('--infeed', type=Path, default=Path('data/features/infeed'))
+    parser.add_argument('--infeed', type=Path, help='optionally materialize all within-feed features in this directory')
     parser.add_argument('--baseline-out', type=Path,
                         help='also train the one-shard cosine baseline, score all val/test and validate its submission')
     parser.add_argument('--resume', action='store_true')

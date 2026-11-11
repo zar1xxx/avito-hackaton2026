@@ -1,0 +1,247 @@
+{
+  "complete": true,
+  "purpose": "infrastructure baseline, small training subset",
+  "git": {
+    "commit": "da4c0a6f29a9fc190128386bd9544fc20ade3b63",
+    "dirty": false
+  },
+  "code_sha256": {
+    "scripts/run_baseline_check.py": "6e3119f90b615d96c6bf013a08b50be10fb75cd252a374732544f7533c0e180d",
+    "scripts/validate_submission.py": "67e24b82bec61456a7e707803dc4d9dc94eda51b654f04e3e962c50603463fe1",
+    "src/common/preparation.py": "6db7a06f1ab46ea0061e0053c6226349e75d0d119171b10a35fe64a68613c0b2",
+    "src/common/metric.py": "8d381c3632b1f0de4eb91aa330f8e83dc51c4eb9bc21e1665be8e7ac54b45e81",
+    "src/common/similarity.py": "4efada00a34d6f30538a46b1ee0a24e2db416f333348ff6c3d70a467ae7e7dae",
+    "src/common/embedding_catalogue.py": "5c73a37041cd32ef3d1c07f762e40b86564e3060c784ce7c4bda48360bd9d78e",
+    "src/common/infeed.py": "12d1c4c02ba7d6743b2f6b557a15dba2a0ea3f58eab4ad641af2c95ef3a9df1d"
+  },
+  "prepared_manifest_sha256": "c41fee4a3d34330e40afbbe660b27ed959f6d56028c002c6cb837cf8deae9874",
+  "reference_sha256": "f4d726d406abaff73ec90d3d7579d4132cea1c103465b4d85cc44973875a82ec",
+  "features": [
+    "f1",
+    "f2",
+    "f3",
+    "f4",
+    "f5",
+    "category_id",
+    "has_item_embedding",
+    "cos_user",
+    "hist_len",
+    "hist_valid_10",
+    "cos_hist_mean_10",
+    "cos_hist_max_10",
+    "hist_valid_50",
+    "cos_hist_mean_50",
+    "cos_hist_max_50",
+    "feed_size",
+    "cat_share_feed",
+    "f1_rank",
+    "f1_z",
+    "f2_rank",
+    "f2_z",
+    "f3_rank",
+    "f3_z",
+    "f4_rank",
+    "f4_z",
+    "f5_rank",
+    "f5_z"
+  ],
+  "similarity": {
+    "group": "cosine",
+    "manifest_sha256": "ab8b05f4bb8e2e66eacdddeaa67cff391d22fdec1cb4995a618bdab446a15870",
+    "features": [
+      "has_item_embedding",
+      "cos_user",
+      "hist_len",
+      "hist_valid_10",
+      "cos_hist_mean_10",
+      "cos_hist_max_10",
+      "hist_valid_50",
+      "cos_hist_mean_50",
+      "cos_hist_max_50"
+    ],
+    "vector_policy": "original split version, no cross-split filling",
+    "covered_parts": {
+      "train": 1,
+      "val": 64,
+      "test": 64
+    }
+  },
+  "feature_groups": [
+    {
+      "group": "cosine",
+      "manifest_sha256": "ab8b05f4bb8e2e66eacdddeaa67cff391d22fdec1cb4995a618bdab446a15870",
+      "features": [
+        "has_item_embedding",
+        "cos_user",
+        "hist_len",
+        "hist_valid_10",
+        "cos_hist_mean_10",
+        "cos_hist_max_10",
+        "hist_valid_50",
+        "cos_hist_mean_50",
+        "cos_hist_max_50"
+      ],
+      "vector_policy": "original split version, no cross-split filling",
+      "covered_parts": {
+        "train": 1,
+        "val": 64,
+        "test": 64
+      }
+    },
+    {
+      "group": "infeed",
+      "manifest_sha256": "31a19d655110f3207a9fa810393f3d65c0efd33a4ba58944baa6052e6e99b3c8",
+      "features": [
+        "feed_size",
+        "cat_share_feed",
+        "f1_rank",
+        "f1_z",
+        "f2_rank",
+        "f2_z",
+        "f3_rank",
+        "f3_z",
+        "f4_rank",
+        "f4_z",
+        "f5_rank",
+        "f5_z"
+      ],
+      "vector_policy": null,
+      "covered_parts": {
+        "train": 1,
+        "val": 64,
+        "test": 64
+      }
+    }
+  ],
+  "train_parts": [
+    "part-00000-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet"
+  ],
+  "selection": "best NDCG@30 on pseudo-Public; pseudo-Private never passed to fit",
+  "score_dtype": "float32",
+  "score_ties": "unmodified model scores; pessimistic reference tie handling",
+  "parameters": {
+    "iterations": 100,
+    "depth": 6,
+    "seed": 42,
+    "threads": 2,
+    "learning_rate": 0.1,
+    "loss_function": "YetiRank"
+  },
+  "counts": {
+    "train_rows": 476301,
+    "train_feeds": 6132,
+    "val_rows": 1389971,
+    "val_feeds": 14423,
+    "selection_rows": 402023,
+    "selection_feeds": 4328,
+    "train_fraction_of_candidates": 0.0019303304474001337
+  },
+  "trees": 40,
+  "model_parameters": {
+    "nan_mode": "Min",
+    "eval_metric": "NDCG:top=30;type=Base",
+    "combinations_ctr": [
+      "Borders:CtrBorderCount=15:CtrBorderType=Uniform:TargetBorderCount=1:TargetBorderType=MinEntropy:Prior=0/1:Prior=0.5/1:Prior=1/1",
+      "Counter:CtrBorderCount=15:CtrBorderType=Uniform:Prior=0/1"
+    ],
+    "iterations": 100,
+    "sampling_frequency": "PerTree",
+    "fold_permutation_block": 0,
+    "leaf_estimation_method": "Newton",
+    "od_pval": 0,
+    "random_score_type": "NormalWithModelSizeDecrease",
+    "counter_calc_method": "SkipTest",
+    "grow_policy": "SymmetricTree",
+    "penalties_coefficient": 1,
+    "boosting_type": "Plain",
+    "model_shrink_mode": "Constant",
+    "feature_border_type": "GreedyLogSum",
+    "ctr_leaf_count_limit": 18446744073709551615,
+    "bayesian_matrix_reg": 0.10000000149011612,
+    "one_hot_max_size": 10,
+    "eval_fraction": 0,
+    "force_unit_auto_pair_weights": false,
+    "l2_leaf_reg": 9.999999682655224e-21,
+    "random_strength": 1,
+    "od_type": "Iter",
+    "rsm": 1,
+    "boost_from_average": false,
+    "max_ctr_complexity": 1,
+    "model_size_reg": 0.5,
+    "simple_ctr": [
+      "Borders:CtrBorderCount=15:CtrBorderType=Uniform:TargetBorderCount=1:TargetBorderType=MinEntropy:Prior=0/1:Prior=0.5/1:Prior=1/1",
+      "Counter:CtrBorderCount=15:CtrBorderType=Uniform:Prior=0/1"
+    ],
+    "pool_metainfo_options": {
+      "tags": {}
+    },
+    "subsample": 0.800000011920929,
+    "use_best_model": true,
+    "od_wait": 25,
+    "random_seed": 42,
+    "depth": 6,
+    "ctr_target_border_count": 1,
+    "posterior_sampling": false,
+    "has_time": false,
+    "store_all_simple_ctr": false,
+    "border_count": 254,
+    "classes_count": 0,
+    "auto_class_weights": "None",
+    "sparse_features_conflict_fraction": 0,
+    "leaf_estimation_backtracking": "No",
+    "used_ram_limit": "1024mb",
+    "best_model_min_trees": 1,
+    "model_shrink_rate": 0,
+    "min_data_in_leaf": 1,
+    "loss_function": "YetiRank",
+    "learning_rate": 0.10000000149011612,
+    "score_function": "Cosine",
+    "task_type": "CPU",
+    "leaf_estimation_iterations": 1,
+    "bootstrap_type": "MVS",
+    "max_leaves": 64,
+    "permutation_count": 4
+  },
+  "validation": {
+    "all": {
+      "feeds": 14423,
+      "rows": 1389971,
+      "ndcg_full": 0.3564143930702051,
+      "ndcg_idcg30": 0.3565509401036815,
+      "ndcg@10": 0.2250544851216313,
+      "ndcg@30": 0.29468502333547175,
+      "reference_check": "passed"
+    },
+    "pseudo_public": {
+      "feeds": 4328,
+      "rows": 402023,
+      "ndcg_full": 0.36324319615939454,
+      "ndcg_idcg30": 0.3635872959168231,
+      "ndcg@10": 0.233827740874779,
+      "ndcg@30": 0.30488514526780014,
+      "reference_check": "passed"
+    },
+    "pseudo_private": {
+      "feeds": 10095,
+      "rows": 987948,
+      "ndcg_full": 0.3534867001757017,
+      "ndcg_idcg30": 0.3535342637332726,
+      "ndcg@10": 0.22129315268977162,
+      "ndcg@30": 0.290311954715054,
+      "reference_check": "passed"
+    }
+  },
+  "submission": {
+    "rows": 2904806,
+    "feeds": 28595,
+    "validator": "passed",
+    "path": "submission.parquet",
+    "sha256": "90f9d74a6ac199adaf0ed10956acdad9f462c35240e287f6c6d1461b9d53704b",
+    "uploaded_to_competition": false
+  },
+  "duration_seconds": 403.67,
+  "author": "Дима",
+  "experiment_date": "2026-11-11",
+  "run_directory": "runs/baseline-infeed-001",
+  "decision": "Optional group only: point estimate is lower and paired interval includes zero; cosine baseline remains the default."
+}
