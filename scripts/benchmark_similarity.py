@@ -11,7 +11,7 @@ import polars as pl
 from src.common.data import load_embeddings
 from src.common.preparation import fingerprint, write_json
 from src.common.resources import memory_snapshot
-from src.common.similarity import (build_feature_part, feature_names, prefetch_vectors, required_vector_rows)
+from src.common.similarity import (build_feature_part, build_prefetched_part, feature_names, prefetch_vectors, required_vector_rows)
 
 
 def benchmark(raw,prepared,cache,output):
@@ -37,7 +37,7 @@ def benchmark(raw,prepared,cache,output):
     start=time.monotonic()
     rows=required_vector_rows(frame)
     vectors=prefetch_vectors(raw,'train',rows)
-    sequential=build_feature_part(frame,'train',vectors,vector_rows=rows)
+    sequential=build_prefetched_part(frame,'train',vectors,rows)
     sequential_seconds=time.monotonic()-start
     reference=pl.read_parquet(cache/cached['path'])
     for candidate in (mapped,sequential):

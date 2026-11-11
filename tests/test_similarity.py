@@ -13,7 +13,7 @@ from src.common.embedding_catalogue import build_catalogue
 from src.common.preparation import prepare_dataset, scan_candidates
 from src.common.similarity import (attach_features, build_features, build_feature_part,
                                   feature_names, padded_features, required_vector_rows, prefetch_vectors,
-                                  LEGACY_IMPLEMENTATIONS)
+                                  LEGACY_IMPLEMENTATIONS, build_prefetched_part)
 
 
 class SimilarityTests(unittest.TestCase):
@@ -96,17 +96,18 @@ class SimilarityTests(unittest.TestCase):
     def test_sequential_prefetch_is_bitwise_identical_to_mapped_vectors(self):
         with tempfile.TemporaryDirectory() as temporary:
             raw=Path(temporary)
-            make_split(raw,'train',12,np.random.default_rng(88),0,True,True)
+            make_split(raw,'train',133,np.random.default_rng(88),0,True,True)
             frame=pl.read_parquet(raw/'train/impressions/part-00000.parquet')
             rows=frame.to_dicts()
             rows[0]['item_id__embedding_idx']=[-1]*len(rows[0]['item_id'])
             rows[1]['history__item_id__embedding_idx']=[-1]*len(rows[1]['history__item_id__embedding_idx'])
             frame=pl.DataFrame(rows,schema=frame.schema)
             vector=np.memmap(raw/'train/item_embeddings/data.memmap',dtype=np.int8,mode='r',shape=(2000,128))
-            old=build_feature_part(frame,'train',vector,batch_size=3)
+            old=pl.concat([build_feature_part(frame.slice(i,128),'train',vector,batch_size=3)
+                           for i in range(0,frame.height,128)])
             required=required_vector_rows(frame)
             compact=prefetch_vectors(raw,'train',required,block_rows=17)
-            new=build_feature_part(frame,'train',compact,batch_size=3,vector_rows=required)
+            new=build_prefetched_part(frame,'train',compact,required,batch_size=3)
             self.assertTrue(old.select('feed_id','candidate_index','item_id').equals(new.select('feed_id','candidate_index','item_id')))
             for name in feature_names():
                 np.testing.assert_array_equal(old[name].to_numpy().view(np.uint32),new[name].to_numpy().view(np.uint32))

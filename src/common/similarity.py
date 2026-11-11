@@ -17,6 +17,7 @@ from src.common.preparation import fingerprint, flat_values, write_json, write_p
 
 
 RECENT = (10, 50)
+FEED_WINDOW = 128
 KEY = ['split', 'feed_id', 'candidate_index']
 # Published mapped-reader implementation whose cached values use the same math.
 LEGACY_IMPLEMENTATIONS = {
@@ -132,10 +133,14 @@ def prefetch_vectors(raw, split, rows, *, block_rows=65536):
 
 
 def value_signature(batch_size):
+    if batch_size < 1:
+        raise ValueError('batch_size must be positive')
     # Reader strategy and unrelated cache/CLI changes do not change numerical values.
     functions = (feature_names, unit, gather, padded_features, padded_indices)
     content = '\n'.join(inspect.getsource(function) for function in functions)
-    content += json.dumps({'assembly_version':1,'recent':RECENT,'batch_size':batch_size,'feed_window':128})
+    # Invalidate non-divisor batches produced before reader window alignment.
+    assembly_version = 1 if FEED_WINDOW % batch_size == 0 else 2
+    content += json.dumps({'assembly_version':assembly_version,'recent':RECENT,'batch_size':batch_size,'feed_window':FEED_WINDOW})
     return hashlib.sha256(content.encode('utf-8')).hexdigest()
 
 
@@ -177,6 +182,16 @@ def build_feature_part(frame, split, vectors, *, batch_size=16, recent=RECENT, v
     if result.select(KEY).is_duplicated().any():
         raise ValueError('duplicate candidate occurrence key')
     return result
+
+
+def build_prefetched_part(frame, split, vectors, vector_rows, *, batch_size=16):
+    # Match mapped-reader batch boundaries even when batch_size does not divide
+    # the feed window; padding shape can affect the last bits of matmul results.
+    return pl.concat([
+        build_feature_part(frame.slice(start, FEED_WINDOW), split, vectors,
+                           batch_size=batch_size, vector_rows=vector_rows)
+        for start in range(0, frame.height, FEED_WINDOW)
+    ])
 
 
 def build_features(raw, prepared, catalogue_root, output, *, train_parts=None, batch_size=16, resume=False, reader='auto'):
@@ -250,15 +265,15 @@ def build_features(raw, prepared, catalogue_root, output, *, train_parts=None, b
                 if strategy == 'sequential':
                     rows = required_vector_rows(frame)
                     vectors = prefetch_vectors(raw,split,rows)
-                    features = build_feature_part(frame,split,vectors,batch_size=batch_size,vector_rows=rows)
+                    features = build_prefetched_part(frame,split,vectors,rows,batch_size=batch_size)
                     prefetched_bytes = vectors.nbytes
                     del vectors,rows
                 else:
                     chunks = []
-                    for start in range(0, frame.height, 128):
+                    for start in range(0, frame.height, FEED_WINDOW):
                         vector_window = load_embeddings(raw, split)
                         try:
-                            chunks.append(build_feature_part(frame.slice(start, 128), split, vector_window, batch_size=batch_size))
+                            chunks.append(build_feature_part(frame.slice(start, FEED_WINDOW), split, vector_window, batch_size=batch_size))
                         finally:
                             vector_window._mmap.close()
                     features = pl.concat(chunks)

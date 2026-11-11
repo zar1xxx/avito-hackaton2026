@@ -17,6 +17,13 @@
   },
   "scope": "one shard, mapped then sequential, warm filesystem-cache effects may influence timings",
   "implementation_sha256": "2821ef1e8c11e3945c2551830910b53c392fb0c1bb42f2415d54cb4d1705418f",
-  "provenance_note": "Measured before the final cache-compatibility guard change; reader and numerical functions unchanged.",
-  "value_signature": "2677b517a4025814566c7f53d30f525692f2582aed7149bebaee0c505f0818b7"
+  "provenance_note": "Original mapped/sequential timing measured before final cache guard and explicit window alignment. Default batch-16 values reverified after those changes. Follow-up timing ran concurrently with model training and is not a speed comparison.",
+  "value_signature": "2677b517a4025814566c7f53d30f525692f2582aed7149bebaee0c505f0818b7",
+  "post_alignment_verification": {
+    "float32_bits_match_cache": true,
+    "candidates": 476301,
+    "seconds": 27.45299999997951,
+    "implementation_sha256": "9e641b37993fbb6d653ed7f986bc5ae31240b00d27fd006534a054ba1f0f0cae",
+    "scope": "sequential reader after explicit feed-window alignment; default batch size 16"
+  }
 }
