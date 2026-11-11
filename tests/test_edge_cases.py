@@ -24,6 +24,7 @@ import pytest
 import torch
 
 from src.nn.dataset import (
+    CAND_FEAT_NAMES,
     EMB_DIM,
     NUM_CAND_FEATS,
     FeedRankingDataset,
@@ -80,12 +81,24 @@ def make_dummy_sample(
         hist_embs = np.zeros((0, EMB_DIM), dtype=np.float32)
         hist_has_emb = np.zeros(0, dtype=bool)
 
-    cand_features = compute_candidate_features(row_dummy, cand_items, cand_cats, h_items, h_cats)
+    user_emb = rng.normal(size=EMB_DIM).astype(np.float32)
+    cand_features = compute_candidate_features(
+        row_dummy,
+        cand_items,
+        cand_cats,
+        h_items,
+        h_cats,
+        user_emb=user_emb,
+        cand_embs=cand_embs,
+        cand_has_emb=cand_has_emb,
+        hist_embs=hist_embs,
+        hist_has_emb=hist_has_emb,
+    )
 
     sample = {
         "feed_id": feed_id,
         "user_id": user_id,
-        "user_emb": rng.normal(size=EMB_DIM).astype(np.float32),
+        "user_emb": user_emb,
         "cand_len": m,
         "cand_item_id": cand_items,
         "cand_category_id": cand_cats,
@@ -400,3 +413,104 @@ def test_mixed_pos_debias_masking(ranking_model):
     assert torch.all(bias_0.abs() > 0.5)
     # На сэмпле 1 pos == -1 -> pos_bias должен быть строго занулен!
     assert torch.allclose(total_with_pos[1], total_no_bias[1], atol=1e-6)
+
+
+def test_cosine_features_math_and_recent_window():
+    """Проверка математики 9 cosine-фичей Димы, окна recent=10 и размерностей MLP."""
+    assert NUM_CAND_FEATS == 24
+    expected_9 = [
+        "cos_user",
+        "cos_hist_mean",
+        "cos_hist_max",
+        "cos_hist_recent_max",
+        "cos_hist_recent_mean",
+        "item_norm",
+        "cat_in_recent",
+        "item_hist_first_pos",
+        "has_hist_emb_mask_rate",
+    ]
+    assert CAND_FEAT_NAMES[-9:] == expected_9
+
+    # Проверка размерностей MLP в FeedRankingModel по умолчанию
+    model = FeedRankingModel()
+    assert model.cand_encoder.mlp[0].in_features == 128 + 32 + 24
+    assert model.main_head[0].in_features == 128 * 3 + 3 + 1 + 24
+
+    # 3 кандидата: [0] вдоль оси 0 (norm=2.0), [1] вдоль оси 1 (norm=3.0), [2] без эмбеддинга (-1)
+    user_emb = np.zeros(EMB_DIM, dtype=np.float32)
+    user_emb[0] = 5.0
+
+    cand_embs = np.zeros((3, EMB_DIM), dtype=np.float32)
+    cand_embs[0, 0] = 2.0
+    cand_embs[1, 1] = 3.0
+    cand_has_emb = np.array([True, True, False], dtype=bool)
+    cand_items = np.array([101, 102, 103], dtype=np.int64)
+    cand_cats = np.array([7, 8, 9], dtype=np.int64)
+
+    # История длиной 11: первые 10 событий без эмбеддинга, 11-е (индекс 10) = [-1, 0, ...]
+    h = 11
+    h_items = np.arange(200, 211, dtype=np.int64)
+    h_items[4] = 102  # кандидат 102 впервые на позиции 4
+    h_cats = np.full(h, 99, dtype=np.int64)
+    h_cats[0] = 7
+    h_cats[1] = 7  # 2 из 10 recent категорий == 7
+
+    hist_embs = np.zeros((h, EMB_DIM), dtype=np.float32)
+    hist_embs[10, 0] = -4.0
+    hist_has_emb = np.zeros(h, dtype=bool)
+    hist_has_emb[10] = True
+
+    row_dummy = {f"f{i}": np.zeros(3, dtype=np.float32) for i in range(1, 6)}
+    feats = compute_candidate_features(
+        row_dummy,
+        cand_items,
+        cand_cats,
+        h_items,
+        h_cats,
+        user_emb=user_emb,
+        cand_embs=cand_embs,
+        cand_has_emb=cand_has_emb,
+        hist_embs=hist_embs,
+        hist_has_emb=hist_has_emb,
+    )
+    assert feats.shape == (3, 24)
+    assert np.isfinite(feats).all()
+
+    idx = {name: i for i, name in enumerate(CAND_FEAT_NAMES)}
+    # cos_user: [1.0, 0.0, 0.0]
+    assert np.allclose(feats[:, idx["cos_user"]], [1.0, 0.0, 0.0], atol=1e-5)
+    # item_norm: [2.0, 3.0, 0.0]
+    assert np.allclose(feats[:, idx["item_norm"]], [2.0, 3.0, 0.0], atol=1e-5)
+    # Первые 10 событий без эмб -> recent_max и recent_mean строго 0.0 (не подменяются 11-м событием!)
+    assert np.allclose(feats[:, idx["cos_hist_recent_max"]], 0.0, atol=1e-6)
+    assert np.allclose(feats[:, idx["cos_hist_recent_mean"]], 0.0, atol=1e-6)
+    # Вся история видит 11-е событие [-1, 0, ...]
+    assert np.allclose(feats[:, idx["cos_hist_max"]], [-1.0, 0.0, 0.0], atol=1e-5)
+    assert np.allclose(feats[:, idx["cos_hist_mean"]], [-1.0, 0.0, 0.0], atol=1e-5)
+    # has_hist_emb_mask_rate: 1 / 11
+    assert np.allclose(feats[:, idx["has_hist_emb_mask_rate"]], 1.0 / 11.0, atol=1e-5)
+    # cat_in_recent: [2/10, 0, 0]
+    assert np.allclose(feats[:, idx["cat_in_recent"]], [0.2, 0.0, 0.0], atol=1e-5)
+    # item_hist_first_pos: [-1.0, 4/256.0, -1.0]
+    assert np.allclose(feats[:, idx["item_hist_first_pos"]], [-1.0, 4.0 / 256.0, -1.0], atol=1e-6)
+
+    # Добавляем валидный эмбеддинг [1, 0, ...] в окно recent (индекс 0)
+    hist_embs[0, 0] = 1.0
+    hist_has_emb[0] = True
+    feats2 = compute_candidate_features(
+        row_dummy,
+        cand_items,
+        cand_cats,
+        h_items,
+        h_cats,
+        user_emb=user_emb,
+        cand_embs=cand_embs,
+        cand_has_emb=cand_has_emb,
+        hist_embs=hist_embs,
+        hist_has_emb=hist_has_emb,
+    )
+    assert np.allclose(feats2[:, idx["cos_hist_recent_max"]], [1.0, 0.0, 0.0], atol=1e-5)
+    assert np.allclose(feats2[:, idx["cos_hist_recent_mean"]], [1.0, 0.0, 0.0], atol=1e-5)
+    assert np.allclose(feats2[:, idx["cos_hist_max"]], [1.0, 0.0, 0.0], atol=1e-5)
+    assert np.allclose(feats2[:, idx["cos_hist_mean"]], [0.0, 0.0, 0.0], atol=1e-5)
+    assert np.allclose(feats2[:, idx["has_hist_emb_mask_rate"]], 2.0 / 11.0, atol=1e-5)

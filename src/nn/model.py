@@ -120,7 +120,7 @@ class CandidateEncoder(nn.Module):
         self,
         d_model: int = 128,
         num_categories: int = 1000,
-        num_cand_feats: int = 15,
+        num_cand_feats: int = 24,
         dropout: float = 0.1,
     ) -> None:
         super().__init__()
@@ -164,7 +164,7 @@ class FeedRankingModel(nn.Module):
         d_model: int = 128,
         nhead: int = 4,
         num_categories: int = 1000,
-        num_cand_feats: int = 15,
+        num_cand_feats: int = 24,
         max_hist_len: int = 256,
         max_position: int = 512,
         dropout: float = 0.15,

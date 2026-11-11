@@ -5,7 +5,7 @@
   (каждый парт читается ровно 1 раз за эпоху, ленты перемешиваются внутри парта, zero .as_py()).
 - FeedRankingDataset (Map-style Dataset): случайный доступ по глобальному индексу (для отладки и Subset).
 - Строгие per-split таблицы эмбеддингов (np.memmap int8 -> float32, -1 = нулевой вектор + маска).
-- Динамический паддинг и 15 инженерных признаков кандидатов.
+- Динамический паддинг и 24 инженерных признака кандидатов (15 базовых + 9 cosine/similarity Димы).
 """
 from __future__ import annotations
 
@@ -27,8 +27,35 @@ except ImportError:
     torch = None
 
 EMB_DIM = 128
+HIST_RECENT = 10
 FLOAT_FEATS = ["f1", "f2", "f3", "f4", "f5"]
-NUM_CAND_FEATS = 15  # f1..f5 (5) + f1_z..f5_z (5) + item_in_hist (1) + cat_share_hist (1) + feed_size (1) + hist_len (1) + cand_rel_pos (1)
+CAND_FEAT_NAMES = [
+    "f1",
+    "f2",
+    "f3",
+    "f4",
+    "f5",
+    "f1_z",
+    "f2_z",
+    "f3_z",
+    "f4_z",
+    "f5_z",
+    "item_in_hist",
+    "cat_share_hist",
+    "feed_size",
+    "hist_len",
+    "cand_rel_pos",
+    "cos_user",
+    "cos_hist_mean",
+    "cos_hist_max",
+    "cos_hist_recent_max",
+    "cos_hist_recent_mean",
+    "item_norm",
+    "cat_in_recent",
+    "item_hist_first_pos",
+    "has_hist_emb_mask_rate",
+]
+NUM_CAND_FEATS = len(CAND_FEAT_NAMES)  # 24
 
 EXPECTED_COLUMNS = [
     "feed_id",
@@ -105,14 +132,26 @@ def gather_embeddings(emb_memmap: np.memmap, indices: np.ndarray, dim: int = EMB
     return out, has_emb
 
 
+def _unit_vectors(x: np.ndarray) -> np.ndarray:
+    """L2-нормирует последнюю ось (float32, защита от нулевой нормы)."""
+    arr = np.asarray(x, dtype=np.float32)
+    norms = np.linalg.norm(arr, axis=-1, keepdims=True)
+    return arr / np.maximum(norms, 1e-12)
+
+
 def compute_candidate_features(
     row: dict[str, Any],
     cand_items: np.ndarray,
     cand_cats: np.ndarray,
     h_items: np.ndarray,
     h_cats: np.ndarray,
+    user_emb: np.ndarray | None = None,
+    cand_embs: np.ndarray | None = None,
+    cand_has_emb: np.ndarray | None = None,
+    hist_embs: np.ndarray | None = None,
+    hist_has_emb: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Вычисляет 15 информативных признаков кандидата на лету через быстрый NumPy."""
+    """Вычисляет 24 признака кандидата на лету через векторный NumPy (15 базовых + 9 cosine Димы)."""
     m = len(cand_items)
     h = len(h_items)
     if m == 0:
@@ -128,28 +167,109 @@ def compute_candidate_features(
     std = np.std(base_feats, axis=0, keepdims=True)
     z_feats = (base_feats - mean) / (std + 1e-5)
 
+    # Пересечение ID и категорий с историей (история от новых событий к старым)
     if h > 0:
         eq_item = cand_items[:, None] == h_items[None, :]
-        item_in_hist = eq_item.any(axis=1).astype(np.float32)
+        item_hit = eq_item.any(axis=1)
+        item_in_hist = item_hit.astype(np.float32)
+        item_hist_first_pos = np.where(
+            item_hit, eq_item.argmax(axis=1).astype(np.float32) / 256.0, -1.0
+        ).astype(np.float32)
 
         eq_cat = cand_cats[:, None] == h_cats[None, :]
         cat_share_hist = eq_cat.mean(axis=1).astype(np.float32)
+        cat_in_recent = eq_cat[:, :HIST_RECENT].mean(axis=1).astype(np.float32)
     else:
         item_in_hist = np.zeros(m, dtype=np.float32)
+        item_hist_first_pos = np.full(m, -1.0, dtype=np.float32)
         cat_share_hist = np.zeros(m, dtype=np.float32)
+        cat_in_recent = np.zeros(m, dtype=np.float32)
 
     feed_size = np.full(m, m / 40.0, dtype=np.float32)
     hist_len = np.full(m, h / 256.0, dtype=np.float32)
     cand_rel_pos = np.arange(m, dtype=np.float32) / max(m, 1)
 
+    # Cosine / similarity признаки по эмбеддингам кандидата, пользователя и истории
+    if cand_embs is None:
+        c_emb = np.zeros((m, EMB_DIM), dtype=np.float32)
+        c_has = np.zeros(m, dtype=bool)
+    else:
+        c_emb = np.asarray(cand_embs, dtype=np.float32)
+        if cand_has_emb is None:
+            c_has = np.linalg.norm(c_emb, axis=1) > 1e-12
+        else:
+            c_has = np.asarray(cand_has_emb, dtype=bool)
+    c_has_f = c_has.astype(np.float32)
+
+    if user_emb is None:
+        raw_u = row.get("user_embedding")
+        if raw_u is not None and len(raw_u) == EMB_DIM:
+            u_emb = (np.asarray(raw_u, dtype=np.float32) / 128.0).astype(np.float32)
+        else:
+            u_emb = np.zeros(EMB_DIM, dtype=np.float32)
+    else:
+        u_emb = np.asarray(user_emb, dtype=np.float32)
+
+    item_norm = (np.linalg.norm(c_emb, axis=1) * c_has_f).astype(np.float32)
+    c_unit = _unit_vectors(c_emb)
+
+    u_norm = float(np.linalg.norm(u_emb))
+    if u_norm > 1e-12:
+        u_unit = (u_emb / u_norm).astype(np.float32)
+        cos_user = (np.clip(c_unit @ u_unit, -1.0, 1.0) * c_has_f).astype(np.float32)
+    else:
+        cos_user = np.zeros(m, dtype=np.float32)
+
+    if h > 0 and hist_embs is not None and len(hist_embs) > 0:
+        h_emb = np.asarray(hist_embs, dtype=np.float32)[:h]
+        if hist_has_emb is None:
+            h_has = np.linalg.norm(h_emb, axis=1) > 1e-12
+        else:
+            h_has = np.asarray(hist_has_emb, dtype=bool)[:h]
+    else:
+        h_emb = np.zeros((0, EMB_DIM), dtype=np.float32)
+        h_has = np.zeros(0, dtype=bool)
+
+    if len(h_has) > 0 and h_has.any():
+        has_hist_emb_mask_rate = np.full(m, float(h_has.mean()), dtype=np.float32)
+        h_valid_unit = _unit_vectors(h_emb[h_has])
+        sim_all = np.clip(c_unit @ h_valid_unit.T, -1.0, 1.0)  # [M, H_valid]
+        cos_hist_mean = (sim_all.mean(axis=1) * c_has_f).astype(np.float32)
+        cos_hist_max = (sim_all.max(axis=1) * c_has_f).astype(np.float32)
+
+        # Строго первые HIST_RECENT исходных событий (без подмены отсутствующих более старыми)
+        n_recent_valid = int(h_has[:HIST_RECENT].sum())
+        if n_recent_valid > 0:
+            sim_recent = sim_all[:, :n_recent_valid]
+            cos_hist_recent_max = (sim_recent.max(axis=1) * c_has_f).astype(np.float32)
+            cos_hist_recent_mean = (sim_recent.mean(axis=1) * c_has_f).astype(np.float32)
+        else:
+            cos_hist_recent_max = np.zeros(m, dtype=np.float32)
+            cos_hist_recent_mean = np.zeros(m, dtype=np.float32)
+    else:
+        has_hist_emb_mask_rate = np.zeros(m, dtype=np.float32)
+        cos_hist_mean = np.zeros(m, dtype=np.float32)
+        cos_hist_max = np.zeros(m, dtype=np.float32)
+        cos_hist_recent_max = np.zeros(m, dtype=np.float32)
+        cos_hist_recent_mean = np.zeros(m, dtype=np.float32)
+
     return np.column_stack([
-        base_feats,       # 5
-        z_feats,          # 5
-        item_in_hist,     # 1
-        cat_share_hist,   # 1
-        feed_size,        # 1
-        hist_len,         # 1
-        cand_rel_pos,     # 1
+        base_feats,               # 5: f1..f5
+        z_feats,                  # 5: f1_z..f5_z
+        item_in_hist,             # 1
+        cat_share_hist,           # 1
+        feed_size,                # 1
+        hist_len,                 # 1
+        cand_rel_pos,             # 1
+        cos_user,                 # 1
+        cos_hist_mean,            # 1
+        cos_hist_max,             # 1
+        cos_hist_recent_max,      # 1
+        cos_hist_recent_mean,     # 1
+        item_norm,                # 1
+        cat_in_recent,            # 1
+        item_hist_first_pos,      # 1
+        has_hist_emb_mask_rate,   # 1
     ]).astype(np.float32)
 
 
@@ -201,7 +321,18 @@ def row_to_sample(row: dict[str, Any], emb: np.memmap, max_hist_len: int = 256) 
 
     cand_embs, cand_has_emb = gather_embeddings(emb, cand_emb_idx, dim=EMB_DIM)
     hist_embs, hist_has_emb = gather_embeddings(emb, h_emb_idx, dim=EMB_DIM)
-    cand_features = compute_candidate_features(row, cand_items, cand_cats, h_items, h_cats)
+    cand_features = compute_candidate_features(
+        row,
+        cand_items,
+        cand_cats,
+        h_items,
+        h_cats,
+        user_emb=user_emb,
+        cand_embs=cand_embs,
+        cand_has_emb=cand_has_emb,
+        hist_embs=hist_embs,
+        hist_has_emb=hist_has_emb,
+    )
 
     sample = {
         "feed_id": feed_id,
