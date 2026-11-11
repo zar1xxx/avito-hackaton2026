@@ -218,6 +218,7 @@ class FeedRankingDataset(Dataset):
 
         feed_id = int(row["feed_id"])
         user_id = int(row.get("user_id", 0))
+        timestamp = int(row.get("timestamp", 0))
 
         # Эмбеддинг пользователя
         raw_user_emb = row.get("user_embedding")
@@ -249,6 +250,7 @@ class FeedRankingDataset(Dataset):
         sample = {
             "feed_id": feed_id,
             "user_id": user_id,
+            "timestamp": timestamp,
             "user_emb": user_emb,
             "cand_len": m,
             "cand_item_id": cand_items,
@@ -305,6 +307,7 @@ def collate_ranking_batch(batch: list[dict[str, Any]]) -> dict[str, torch.Tensor
 
     feed_ids = torch.zeros(b, dtype=torch.long)
     user_ids = torch.zeros(b, dtype=torch.long)
+    timestamps = torch.zeros(b, dtype=torch.long)
     user_embs = torch.zeros((b, EMB_DIM), dtype=torch.float32)
     cand_lens = torch.zeros(b, dtype=torch.long)
     hist_lens = torch.zeros(b, dtype=torch.long)
@@ -315,6 +318,7 @@ def collate_ranking_batch(batch: list[dict[str, Any]]) -> dict[str, torch.Tensor
 
         feed_ids[i] = item["feed_id"]
         user_ids[i] = item["user_id"]
+        timestamps[i] = item.get("timestamp", 0)
         user_embs[i] = torch.from_numpy(item["user_emb"])
         cand_lens[i] = m
         hist_lens[i] = h
@@ -345,6 +349,7 @@ def collate_ranking_batch(batch: list[dict[str, Any]]) -> dict[str, torch.Tensor
     result = {
         "feed_id": feed_ids,
         "user_id": user_ids,
+        "timestamp": timestamps,
         "user_emb": user_embs,
         "cand_len": cand_lens,
         "hist_len": hist_lens,

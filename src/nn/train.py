@@ -26,7 +26,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from src.common.metric import all_variants
+from src.common.cv import mask_feeds, pseudo_split
+from src.common.metric import all_variants, mean_ndcg
 from src.nn.dataset import NUM_CAND_FEATS, FeedRankingDataset, collate_ranking_batch
 from src.nn.model import FeedRankingModel
 
@@ -113,12 +114,14 @@ def evaluate_ndcg(
     model: nn.Module,
     val_loader: DataLoader,
     device: torch.device,
+    cv_mode: str = "danya",
 ) -> dict[str, float]:
-    """Считает метрики NDCG по валидационному датасету с отключенным position bias."""
+    """Считает метрики NDCG по валидационному датасету (включая pseudo-public/private)."""
     model.eval()
     all_feed_ids = []
     all_targets = []
     all_scores = []
+    all_timestamps = []
 
     for batch in val_loader:
         for k, v in batch.items():
@@ -133,24 +136,57 @@ def evaluate_ndcg(
 
         b, m = mask.shape
         feed_ids_expanded = batch["feed_id"].unsqueeze(1).expand(b, m)
+        ts_tensor = batch.get("timestamp")
+        if ts_tensor is None:
+            ts_tensor = torch.zeros(b, dtype=torch.long, device=device)
+        ts_expanded = ts_tensor.unsqueeze(1).expand(b, m)
 
         val_cand_mask = mask.cpu().numpy()
         feed_ids = feed_ids_expanded.cpu().numpy()[val_cand_mask]
         targets = batch["target"].cpu().numpy()[val_cand_mask]
         scores = main_scores.cpu().numpy()[val_cand_mask]
+        timestamps = ts_expanded.cpu().numpy()[val_cand_mask]
 
         all_feed_ids.append(feed_ids)
         all_targets.append(targets)
         all_scores.append(scores)
+        all_timestamps.append(timestamps)
 
     if not all_feed_ids:
-        return {"ndcg_full": 0.0, "ndcg_idcg30": 0.0, "ndcg@30": 0.0}
+        return {
+            "ndcg_full": 0.0,
+            "ndcg_idcg30": 0.0,
+            "ndcg@30": 0.0,
+            "ndcg_public": 0.0,
+            "ndcg_private": 0.0,
+        }
 
     feed_ids_cat = np.concatenate(all_feed_ids)
     targets_cat = np.concatenate(all_targets)
     scores_cat = np.concatenate(all_scores)
+    ts_cat = np.concatenate(all_timestamps)
 
-    return all_variants(feed_ids_cat, targets_cat, scores_cat)
+    res = all_variants(feed_ids_cat, targets_cat, scores_cat)
+
+    if cv_mode == "danya" and len(np.unique(feed_ids_cat)) >= 2 and len(np.unique(ts_cat)) >= 2:
+        pub_feeds, priv_feeds = pseudo_split(feed_ids_cat, ts_cat, frac=0.3)
+        m_pub = mask_feeds(feed_ids_cat, pub_feeds)
+        m_priv = mask_feeds(feed_ids_cat, priv_feeds)
+        res["ndcg_public"] = (
+            mean_ndcg(feed_ids_cat[m_pub], targets_cat[m_pub], scores_cat[m_pub])
+            if m_pub.any()
+            else res["ndcg_full"]
+        )
+        res["ndcg_private"] = (
+            mean_ndcg(feed_ids_cat[m_priv], targets_cat[m_priv], scores_cat[m_priv])
+            if m_priv.any()
+            else res["ndcg_full"]
+        )
+    else:
+        res["ndcg_public"] = res["ndcg_full"]
+        res["ndcg_private"] = res["ndcg_full"]
+
+    return res
 
 
 def train(args: argparse.Namespace) -> float:
@@ -161,10 +197,11 @@ def train(args: argparse.Namespace) -> float:
     mixup_alpha = getattr(args, "mixup_alpha", 0.0)
     temperature = getattr(args, "temperature", 1.0)
     use_set_attention = getattr(args, "use_set_attention", True)
+    cv_mode = getattr(args, "cv_mode", "danya")
 
     print("=" * 75)
     print(f"Запуск обучения: {args.data} | Device: {device} | Loss: {args.loss} (T={temperature}) | Seed: {seed}")
-    print(f"Сплиты: train='{args.train_split}', val='{args.val_split}' | MixUp alpha: {mixup_alpha}")
+    print(f"Сплиты: train='{args.train_split}', val='{args.val_split}' | CV Mode: {cv_mode} | MixUp: {mixup_alpha}")
     print(f"Debias: {'ВКЛЮЧЕН' if args.use_pos_bias else 'ОТКЛЮЧЕН'} | Set-Attention: {'ВКЛЮЧЕН' if use_set_attention else 'ОТКЛЮЧЕН'} | Patience: {args.patience}")
     print("=" * 75)
 
@@ -235,10 +272,11 @@ def train(args: argparse.Namespace) -> float:
     )
 
     # 3. Начальная оценка до обучения
-    init_metrics = evaluate_ndcg(model, val_loader, device)
+    init_metrics = evaluate_ndcg(model, val_loader, device, cv_mode=cv_mode)
+    init_target = init_metrics["ndcg_private"] if cv_mode == "danya" else init_metrics["ndcg_full"]
     print(
-        f"Initial Val NDCG (без обучения): full={init_metrics['ndcg_full']:.4f} | "
-        f"idcg30={init_metrics['ndcg_idcg30']:.4f} | @30={init_metrics['ndcg@30']:.4f}"
+        f"Initial Val NDCG (без обучения): priv={init_metrics['ndcg_private']:.4f} | "
+        f"pub={init_metrics['ndcg_public']:.4f} | full={init_metrics['ndcg_full']:.4f} | @30={init_metrics['ndcg@30']:.4f}"
     )
 
     best_ndcg = -1.0
@@ -248,8 +286,12 @@ def train(args: argparse.Namespace) -> float:
     # Инициализация файла истории метрик
     history_file = out_dir / "history.csv"
     with open(history_file, "w", encoding="utf-8") as f:
-        f.write("epoch,train_loss,val_ndcg_full,val_ndcg_idcg30,val_ndcg_at30,lr,epoch_time_sec,best_ndcg\n")
-        f.write(f"0,NaN,{init_metrics['ndcg_full']:.5f},{init_metrics['ndcg_idcg30']:.5f},{init_metrics['ndcg@30']:.5f},{args.lr:.2e},0.0,{init_metrics['ndcg_full']:.5f}\n")
+        f.write("epoch,train_loss,val_ndcg_full,val_ndcg_public,val_ndcg_private,val_ndcg_idcg30,val_ndcg_at30,lr,epoch_time_sec,best_ndcg\n")
+        f.write(
+            f"0,NaN,{init_metrics['ndcg_full']:.5f},{init_metrics['ndcg_public']:.5f},"
+            f"{init_metrics['ndcg_private']:.5f},{init_metrics['ndcg_idcg30']:.5f},"
+            f"{init_metrics['ndcg@30']:.5f},{args.lr:.2e},0.0,{init_target:.5f}\n"
+        )
 
     # 4. Цикл обучения с EarlyStopping
     global_step = 0
@@ -298,10 +340,10 @@ def train(args: argparse.Namespace) -> float:
         train_throughput = len(train_dataset) / max(epoch_duration, 1e-6)
 
         # Валидация после эпохи
-        val_metrics = evaluate_ndcg(model, val_loader, device)
-        cur_ndcg = val_metrics["ndcg_full"]
+        val_metrics = evaluate_ndcg(model, val_loader, device, cv_mode=cv_mode)
+        cur_ndcg = val_metrics["ndcg_private"] if cv_mode == "danya" else val_metrics["ndcg_full"]
 
-        # Шаг шедулера по валидационному NDCG
+        # Шаг шедулера по целевому валидационному NDCG (pseudo-private при cv_mode='danya')
         scheduler.step(cur_ndcg)
         cur_lr = optimizer.param_groups[0]["lr"]
 
@@ -331,27 +373,28 @@ def train(args: argparse.Namespace) -> float:
         with open(history_file, "a", encoding="utf-8") as f:
             f.write(
                 f"{epoch},{avg_train_loss:.5f},{val_metrics['ndcg_full']:.5f},"
+                f"{val_metrics['ndcg_public']:.5f},{val_metrics['ndcg_private']:.5f},"
                 f"{val_metrics['ndcg_idcg30']:.5f},{val_metrics['ndcg@30']:.5f},"
                 f"{cur_lr:.2e},{epoch_duration:.2f},{best_ndcg:.5f}\n"
             )
 
         print("-" * 75)
         print(
-            f"--> Конец Эпохи {epoch} ({epoch_duration:.2f}с, {train_throughput:.1f} лент/сек) | "
-            f"Val NDCG: full={val_metrics['ndcg_full']:.4f} | "
-            f"idcg30={val_metrics['ndcg_idcg30']:.4f} | "
-            f"@30={val_metrics['ndcg@30']:.4f} "
+            f"--> Эпоха {epoch} ({epoch_duration:.2f}с, {train_throughput:.1f} л/с) | "
+            f"Val NDCG: priv={val_metrics['ndcg_private']:.4f} | pub={val_metrics['ndcg_public']:.4f} | "
+            f"full={val_metrics['ndcg_full']:.4f} | @30={val_metrics['ndcg@30']:.4f} "
             f"{'(* NEW BEST *)' if is_best else f'(patience: {patience_counter}/{args.patience})'}"
         )
         print("-" * 75)
 
         # Early Stopping
         if patience_counter >= args.patience:
-            print(f"\n[EarlyStopping] NDCG не улучшался {args.patience} эпох. Остановка обучения!")
+            print(f"\n[EarlyStopping] {'pseudo-private ' if cv_mode == 'danya' else ''}NDCG не улучшался {args.patience} эпох. Остановка обучения!")
             break
 
     total_time = time.perf_counter() - total_start
-    print(f"\n[DONE] Обучение завершено за {total_time:.2f}с. Лучший Val NDCG(full): {best_ndcg:.4f}")
+    metric_label = "pseudo-private" if cv_mode == "danya" else "full"
+    print(f"\n[DONE] Обучение завершено за {total_time:.2f}с. Лучший Val NDCG ({metric_label}): {best_ndcg:.4f}")
     print(f"Чекпоинт сохранен в: {out_dir / 'best_model.pt'}")
     return best_ndcg
 
@@ -384,6 +427,7 @@ def main() -> None:
     parser.add_argument("--use_set_attention", "--use-set-attention", dest="use_set_attention", action="store_true", default=True, help="Включить Self-Attention между кандидатами ленты")
     parser.add_argument("--no_set_attention", "--no-set-attention", dest="use_set_attention", action="store_false", help="Отключить Set-Attention (для сравнения с baseline)")
     parser.add_argument("--log-every", type=int, default=5)
+    parser.add_argument("--cv-mode", choices=["danya", "simple"], default="danya", help="Режим валидации: 'danya' (pseudo-public 30% / pseudo-private 70% по timestamp) или 'simple'")
     parser.add_argument("--seed", type=int, default=42, help="Seed для воспроизводимости")
     parser.add_argument("--device", default=None)
     args = parser.parse_args()
