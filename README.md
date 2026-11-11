@@ -33,7 +33,8 @@ models/nn/, features/    зона Августа и Антона
 
 ## Запуск
 ```bash
-pip install polars catboost lightgbm pyarrow numpy pandas
+pip install -r requirements.txt  # Windows: см. раздел «Установка на Windows» ниже
+# (или вручную) pip install polars catboost lightgbm pyarrow numpy pandas
 export PYTHONPATH=.
 python -m src.gbdt.train train --data /path/to/competition --out runs/gbdt-01
 python -m src.gbdt.train predict --data /path/to/competition \
@@ -75,3 +76,18 @@ python scripts/validate_submission.py $D/sample_submission.parquet runs/blend/te
 - `--log` дописывает строку в `experiments/log.md` — включать только на реальных данных.
 - Метрики `priv_*` — на pseudo-private (поздние 70% val по времени); early stopping идёт по pseudo-public.
 - Все числа на синтетике (`eval/make_synthetic.py`) проверяют только работоспособность кода.
+
+## Установка на Windows (PowerShell)
+Нужен Python 3.12 (python.org или `winget install Python.Python.3.12`; при установке отметить «Add python.exe to PATH»).
+Заглушка «Microsoft Store» вместо Python не подходит: если `python` её открывает — отключить в
+Параметры → Приложения → Дополнительные параметры → Псевдонимы выполнения приложений.
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1      # если запрещено: Set-ExecutionPolicy -Scope Process Bypass
+python -m pip install -U pip
+python -m pip install -r requirements.txt
+$env:PYTHONPATH = "."
+python eval/make_synthetic.py --out data/synth --feeds 4000 --parts 4
+python -m src.gbdt.run_exp --data data/synth --out runs/t1 --kind lightgbm --iterations 200
+```
+В PowerShell команды запускаются по одной строке (без `&&`); перенос строки — обратный апостроф.
