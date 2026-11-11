@@ -22,6 +22,7 @@ from src.common.embedding_catalogue import build_catalogue
 from src.common.preparation import FORMAT_VERSION, fingerprint, prepare_dataset
 from src.common.similarity import build_features
 from src.common.validation import make_validation_split
+from src.common.infeed import build_features as build_infeed_features
 
 
 def prepared_cache_valid(raw, prepared, eda):
@@ -52,7 +53,9 @@ def prepared_cache_valid(raw, prepared, eda):
 
 def reproduce(raw=Path('competition'), prepared=Path('data/prepared'), eda=Path('runs/eda'),
               catalogue=Path('data/embedding_catalogue'), features=Path('data/features/cosine'),
-              *, resume=False, feature_train_parts=1):
+              *, resume=False, feature_train_parts=1, infeed=Path('data/features/infeed'), baseline_out=None):
+    if baseline_out is not None and Path(baseline_out).exists():
+        raise FileExistsError('baseline output exists; choose a fresh --baseline-out directory')
     raw, prepared, eda, catalogue, features = (Path(path).resolve() for path in (raw, prepared, eda, catalogue, features))
     if not (raw / 'train/impressions').is_dir() and (raw / 'competition/train/impressions').is_dir():
         raw = raw / 'competition'
@@ -71,7 +74,14 @@ def reproduce(raw=Path('competition'), prepared=Path('data/prepared'), eda=Path(
     build_notebook(eda / 'summary.json', eda / '01_data_eda.ipynb')
     build_catalogue(raw, catalogue, resume=resume)
     build_features(raw, prepared, catalogue, features, train_parts=feature_train_parts, resume=resume)
-    print('Data, EDA, folds, versioned catalogue and cosine features are ready.', flush=True)
+    if infeed is not None:
+        build_infeed_features(prepared, Path(infeed).resolve(), resume=resume)
+    print('Data, EDA, folds, catalogue, cosine and within-feed features are ready.', flush=True)
+    if baseline_out is not None:
+        from scripts.run_baseline_check import run
+        # Keep the validated cosine model as the reproducible default. New
+        # feature groups remain opt-in until matched comparisons justify them.
+        run(prepared, raw, Path(baseline_out), feature_root=features)
 
 
 if __name__ == '__main__':
@@ -81,6 +91,9 @@ if __name__ == '__main__':
     parser.add_argument('--eda', type=Path, default=Path('runs/eda'))
     parser.add_argument('--catalogue', type=Path, default=Path('data/embedding_catalogue'))
     parser.add_argument('--features', type=Path, default=Path('data/features/cosine'))
+    parser.add_argument('--infeed', type=Path, default=Path('data/features/infeed'))
+    parser.add_argument('--baseline-out', type=Path,
+                        help='also train the one-shard cosine baseline, score all val/test and validate its submission')
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--feature-train-parts', type=int, default=1,
                         help='train cosine cache size (default: the one-shard baseline; val/test are complete)')
@@ -88,4 +101,5 @@ if __name__ == '__main__':
                         help='materialize cosine features for all 512 train shards; may take hours')
     args = parser.parse_args()
     reproduce(args.raw, args.prepared, args.eda, args.catalogue, args.features,
-              resume=args.resume, feature_train_parts=None if args.all_train_features else args.feature_train_parts)
+              resume=args.resume, feature_train_parts=None if args.all_train_features else args.feature_train_parts,
+              infeed=args.infeed, baseline_out=args.baseline_out)

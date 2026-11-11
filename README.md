@@ -28,6 +28,7 @@ scripts/prepare_data.py          полный проход: Parquet + EDA
 scripts/build_eda_notebook.py    исполняемый отчёт с графиками
 scripts/run_baseline_check.py    небольшой CatBoost: весь val, test и валидатор
 scripts/reproduce_data.py        одна команда для данных, EDA, фолдов и cosine-кеша
+scripts/build_infeed_features.py ранги, z-score, размер и категории внутри ленты
 src/common/embedding_catalogue.py общий каталог версий эмбеддингов
 src/common/similarity.py         пакетные признаки сходства
 notebooks/01_data_eda.ipynb       выполненный EDA по всему датасету
@@ -161,10 +162,25 @@ EDA включает размеры лент/историй, доли позит
 uv run --locked python -m scripts.reproduce_data --raw competition --resume
 ```
 
+Полная проверочная цепочка от сырых файлов до валидированного сабмита одной
+командой, включая обучение cosine-baseline на одном train-шарде:
+
+```powershell
+uv run --locked python -m scripts.reproduce_data --raw competition --resume --baseline-out runs/reproduced-baseline-001
+```
+
+Для этого режима нужен предоставленный `competition/baseline/calculate_metrics.py`.
+Используются seed=42, фиксированные версии зависимостей, CPU=2 потока, depth=6,
+до 100 итераций с выбором по псевдо-Public. Выходная папка модели должна быть
+новой. Псевдо-Private оценивается после fit; полноценное обучение на всём train
+этот проверочный режим не подразумевает. Дополнительные группы признаков
+включаются отдельным вызовом модельного скрипта после сравнения качества.
+
 Команда проверяет и подготавливает все исходные таблицы, EDA-ноутбук в `runs/eda/`,
 разбиение val, общий каталог эмбеддингов и cosine-кеш для первого train-шарда,
 **всего val и всего test**. Подготовленные базовые таблицы при этом полные,
-все 512 train-шардов. Проверенный кеш переиспользуется; повреждённые файлы
+все 512 train-шардов. Группа статистик внутри ленты также строится полностью
+в `data/features/infeed/`. Проверенный кеш переиспользуется; повреждённые файлы
 не считаются готовыми. Передача архивов и тяжёлых таблиц через Git не нужна.
 
 По умолчанию cosine-кеш соответствует небольшому проверочному прогону.
@@ -210,6 +226,28 @@ uv run --locked python -m scripts.build_similarity_features --train-parts 1 --re
 ```
 
 ### Проверка моделей
+
+Группа `data/features/infeed/` содержит 12 признаков только из текущей ленты:
+размер, долю категории кандидата и для f1–f5 — нормированный ранг и z-score.
+Ранги возрастающие: средний ранг при равенстве / размер ленты. Z-score использует
+генеральное стандартное отклонение (`ddof=0`), для постоянной и одиночной ленты
+равен 0. Target, исходная позиция, другие ленты и ID кандидатов в расчёте не
+участвуют. Повторные item_id остаются отдельными кандидатами с candidate_index.
+Старый общий загрузчик использует те же формулы, включая конечный z-score для
+одиночных лент.
+
+```powershell
+uv run --locked python -m scripts.build_infeed_features --prepared data/prepared --out data/features/infeed --resume
+```
+
+Параметр `--feature-root` можно повторять: группы соединяются по ключу
+конкретного вхождения кандидата, дубли имён признаков отклоняются. Сравнение
+cosine-модели с добавлением признаков внутри ленты:
+
+```powershell
+uv run --locked python -m scripts.run_baseline_check --feature-root data/features/cosine --feature-root data/features/infeed --out runs/baseline-infeed-001
+uv run --locked python -m scripts.compare_baselines --baseline runs/baseline-cosine-001 --candidate runs/baseline-infeed-001 --out runs/baseline-infeed-001/comparison.json
+```
 
 Проверка полной цепочки на подготовленных таблицах (один train-шард,
 100 итераций, CPU, f1–f5 и категория):

@@ -2,7 +2,8 @@
 
 The checkpoint is selected on pseudo-Public only. All val feeds are scored,
 including untouched pseudo-Private, and metrics are checked against the supplied
-evaluator. Only f1-f5 and category_id enter the model.
+evaluator. Base inputs are f1-f5 and category_id; optional occurrence-keyed
+feature groups are attached explicitly and recorded in the run metadata.
 """
 from __future__ import annotations
 
@@ -32,6 +33,9 @@ def load_validation(root: Path) -> pl.DataFrame:
     columns = ['feed_id', 'timestamp', 'candidate_index', 'item_id', 'target', *FEATURES]
     frame = scan_candidates(root, 'val').select(columns).collect()
     folds = pl.read_parquet(root / 'val_folds.parquet')
+    if not folds.schema['feed_id'].is_integer():
+        raise ValueError('validation feed_id must have an integer dtype')
+    folds = folds.with_columns(pl.col('feed_id').cast(frame.schema['feed_id']))
     if folds['feed_id'].is_duplicated().any() or folds['feed_id'].null_count():
         raise ValueError('validation assignments must have one non-null row per feed')
     if set(folds['leaderboard_split'].to_list()) != {'public', 'private'}:
@@ -84,25 +88,35 @@ def run(root: Path, raw: Path, output: Path, *, train_parts=1, iterations=100,
     tracked_code = ['scripts/run_baseline_check.py', 'scripts/validate_submission.py',
                     'src/common/preparation.py', 'src/common/metric.py']
     model_features = list(FEATURES)
-    feature_metadata = None
-    if feature_root is not None:
+    feature_metadata = []
+    feature_roots = [] if feature_root is None else ([feature_root] if isinstance(feature_root, (str, Path)) else list(feature_root))
+    feature_roots = [Path(path).resolve() for path in feature_roots]
+    for group_root in feature_roots:
         from src.common.similarity import attach_features
-        feature_root = Path(feature_root).resolve()
-        feature_manifest_path = feature_root / 'manifest.json'
+        feature_manifest_path = group_root / 'manifest.json'
         feature_manifest = json.loads(feature_manifest_path.read_text(encoding='utf-8'))
         if not feature_manifest.get('complete'):
-            raise ValueError('similarity feature set is incomplete')
+            raise ValueError(f'feature group is incomplete: {group_root}')
+        overlap = set(model_features) & set(feature_manifest['features'])
+        if overlap:
+            raise ValueError(f'duplicate feature names across groups: {sorted(overlap)}')
         model_features += feature_manifest['features']
         tracked_code += ['src/common/similarity.py', 'src/common/embedding_catalogue.py']
-        feature_metadata = {'manifest_sha256': hashlib.sha256(feature_manifest_path.read_bytes()).hexdigest(),
-                            'features': feature_manifest['features'],
-                            'vector_policy': feature_manifest['vector_policy']}
+        if feature_manifest.get('feature_group') == 'infeed':
+            tracked_code.append('src/common/infeed.py')
+        feature_metadata.append({'group': feature_manifest.get('feature_group', 'cosine'),
+                                 'manifest_sha256': hashlib.sha256(feature_manifest_path.read_bytes()).hexdigest(),
+                                 'features': feature_manifest['features'],
+                                 'vector_policy': feature_manifest.get('vector_policy'),
+                                 'covered_parts': {name: value['covered_parts'] for name,value in feature_manifest['splits'].items()}})
     report = {
         'complete': False, 'purpose': 'infrastructure baseline, small training subset',
-        'git': git_snapshot(), 'code_sha256': {name: hashlib.sha256((code_root / name).read_bytes()).hexdigest() for name in tracked_code},
+        'git': git_snapshot(), 'code_sha256': {name: hashlib.sha256((code_root / name).read_bytes()).hexdigest() for name in dict.fromkeys(tracked_code)},
         'prepared_manifest_sha256': hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
         'reference_sha256': hashlib.sha256(reference_path.read_bytes()).hexdigest(),
-        'features': model_features, 'similarity': feature_metadata, 'train_parts': [part['source'] for part in selected],
+        'features': model_features,
+        'similarity': next((group for group in feature_metadata if group['group'] == 'cosine'), None),
+        'feature_groups': feature_metadata, 'train_parts': [part['source'] for part in selected],
         'selection': 'best NDCG@30 on pseudo-Public; pseudo-Private never passed to fit',
         'score_dtype': 'float32', 'score_ties': 'unmodified model scores; pessimistic reference tie handling',
         'parameters': {'iterations': iterations, 'depth': depth, 'seed': seed, 'threads': threads,
@@ -114,9 +128,10 @@ def run(root: Path, raw: Path, output: Path, *, train_parts=1, iterations=100,
     train = pl.concat([pl.read_parquet(root / part['candidate_path'], columns=columns) for part in selected])\
         .sort('feed_id', 'candidate_index')
     val = load_validation(root)
-    if feature_root is not None:
-        train, _ = attach_features(train, feature_root, 'train', [entry['source'] for entry in selected])
-        val, _ = attach_features(val, feature_root, 'val', [entry['source'] for entry in manifest['splits']['val']['parts']])
+    for group_root in feature_roots:
+        train, _ = attach_features(train, group_root, 'train', [entry['source'] for entry in selected])
+        val, _ = attach_features(val, group_root, 'val', [entry['source'] for entry in manifest['splits']['val']['parts']])
+    if feature_roots:
         train, val = train.sort('feed_id', 'candidate_index'), val.sort('feed_id', 'candidate_index')
     if val.height != manifest['splits']['val']['candidates']:
         raise ValueError('val candidate count differs from prepared manifest')
@@ -162,8 +177,8 @@ def run(root: Path, raw: Path, output: Path, *, train_parts=1, iterations=100,
     predictions = []
     for index, part in enumerate(manifest['splits']['test']['parts']):
         batch = pl.read_parquet(root / part['candidate_path'], columns=['feed_id', 'candidate_index', 'item_id', *FEATURES])
-        if feature_root is not None:
-            batch, _ = attach_features(batch, feature_root, 'test', [part['source']])
+        for group_root in feature_roots:
+            batch, _ = attach_features(batch, group_root, 'test', [part['source']])
         score = reloaded.predict(pool(batch, labeled=False, features=model_features), thread_count=threads).astype(np.float32)
         predictions.append(batch.select('feed_id', 'item_id').with_columns(pl.Series('score', score, dtype=pl.Float32)))
         if (index + 1) % 16 == 0:
@@ -198,7 +213,7 @@ def main():
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--threads', type=int, default=2)
     parser.add_argument('--reference', type=Path, default=REFERENCE)
-    parser.add_argument('--feature-root', type=Path, help='attach an occurrence-keyed cosine feature group')
+    parser.add_argument('--feature-root', type=Path, action='append', help='attach a feature group; repeat for multiple groups')
     args = parser.parse_args()
     run(args.data, args.raw, args.out, train_parts=args.train_parts, iterations=args.iterations,
         depth=args.depth, seed=args.seed, threads=args.threads, reference_path=args.reference, feature_root=args.feature_root)

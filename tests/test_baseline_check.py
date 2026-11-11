@@ -69,6 +69,14 @@ class BaselineCheckTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'strictly precede'):
             load_validation(self.prepared)
 
+    def test_integer_width_normalization_and_noninteger_rejection(self):
+        path = self.prepared / 'val_folds.parquet'
+        self.folds.with_columns(pl.col('feed_id').cast(pl.Int64)).write_parquet(path)
+        self.assertEqual(load_validation(self.prepared)['feed_id'].n_unique(),10)
+        self.folds.with_columns(pl.col('feed_id').cast(pl.Float64)).write_parquet(path)
+        with self.assertRaisesRegex(ValueError,'integer dtype'):
+            load_validation(self.prepared)
+
     @unittest.skipUnless(REFERENCE.is_file(), 'download the supplied evaluator to compare cosine features')
     def test_cosine_feature_baseline_end_to_end(self):
         catalogue, features = self.prepared.parent / 'catalogue', self.prepared.parent / 'features'
@@ -79,6 +87,23 @@ class BaselineCheckTests(unittest.TestCase):
         self.assertEqual(report['features'], FEATURES + feature_names())
         self.assertEqual(report['submission']['validator'], 'passed')
         self.assertEqual(report['validation']['pseudo_private']['feeds'], 7)
+
+    @unittest.skipUnless(REFERENCE.is_file(), 'download evaluator to test multiple feature groups')
+    def test_multiple_groups_and_name_collision(self):
+        from src.common.infeed import build_features as build_infeed, feature_names as infeed_names
+        catalogue = self.prepared.parent / 'catalogue'
+        cosine, infeed = self.prepared.parent / 'cosine', self.prepared.parent / 'infeed'
+        build_catalogue(self.raw, catalogue)
+        build_features(self.raw, self.prepared, catalogue, cosine)
+        build_infeed(self.prepared, infeed)
+        report = run(self.prepared, self.raw, self.out, iterations=3, depth=2, threads=1,
+                     reference_path=REFERENCE, feature_root=[cosine,infeed])
+        self.assertEqual(report['features'], FEATURES + feature_names() + infeed_names())
+        self.assertEqual([group['group'] for group in report['feature_groups']],['cosine','infeed'])
+        self.assertEqual(report['submission']['validator'],'passed')
+        with self.assertRaisesRegex(ValueError,'duplicate feature names'):
+            run(self.prepared,self.raw,self.out.parent / 'duplicate',reference_path=REFERENCE,
+                feature_root=[cosine,cosine])
 
 
 if __name__ == '__main__':
