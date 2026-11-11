@@ -5,6 +5,7 @@ The report states sampling explicitly; this is not a full EDA scan.
 """
 import argparse
 import json
+import math
 from pathlib import Path
 
 import numpy as np
@@ -20,7 +21,7 @@ HISTORY_COLS = [f"history__{name}" for name in
 
 def inspect_split(root: Path, split: str, sample_feeds: int) -> dict:
     errors = []
-    report = {"errors": errors, "sampled_feeds": 0}
+    report = {"errors": errors, "warnings": [], "sampled_feeds": 0}
     parts = sorted((root / split / "impressions").glob("part-*.parquet"))
     if not parts:
         errors.append(f"missing {split}/impressions/part-*.parquet")
@@ -34,7 +35,8 @@ def inspect_split(root: Path, split: str, sample_feeds: int) -> dict:
             raise ValueError("invalid embedding shape")
         if shape[1] != EMB_DIM or dtype != np.dtype("int8") or meta["order"] not in ("C", "F"):
             raise ValueError("expected int8 embeddings with 128 dimensions and C/F order")
-        expected_size = int(np.prod(shape)) * dtype.itemsize
+        # NumPy's default integer is 32-bit on Windows; train exceeds 10 GB.
+        expected_size = math.prod(shape) * dtype.itemsize
         actual_size = (embedding_dir / "data.memmap").stat().st_size
         if actual_size != expected_size:
             raise ValueError(f"memmap size {actual_size}, expected {expected_size}")
@@ -99,8 +101,11 @@ def inspect_split(root: Path, split: str, sample_feeds: int) -> dict:
         for name in arrays + HISTORY_COLS + ["user_embedding"]:
             if any(value is None for value in row[name]):
                 errors.append(f"{prefix}: null inside {name}")
-        if not row["item_id"] or len(set(row["item_id"])) != len(row["item_id"]):
-            errors.append(f"{prefix}: empty or duplicate candidate item_id")
+        if not row["item_id"]:
+            errors.append(f"{prefix}: empty candidate list")
+        if len(set(row["item_id"])) != len(row["item_id"]):
+            messages = errors if split == 'test' else report['warnings']
+            messages.append(f"{prefix}: repeated item_id; preserve occurrences with candidate_index")
         if len(row["user_embedding"]) != EMB_DIM:
             errors.append(f"{prefix}: wrong user_embedding dimension")
         for name in ("item_id__embedding_idx", "history__item_id__embedding_idx"):

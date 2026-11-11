@@ -18,11 +18,16 @@
 src/common/metric.py     NDCG / NDCG@10 / NDCG@30, сверены с эталоном на синтетике
 src/common/data.py       чтение лент, признаки сходства/истории, ранги внутри ленты
 src/common/validation.py временное разбиение val и групповые OOF-фолды
+src/common/preparation.py подготовка таблиц и точный EDA по всем данным
 src/gbdt/train.py        CatBoost YetiRank: train / predict
 eval/make_synthetic.py   крошечный синтетический датасет для проверки кода (не данные Авито)
 scripts/validate_submission.py   проверка формата сабмита
 scripts/check_dataset.py         проверка распакованного датасета
 scripts/make_validation_split.py создание таблицы разбиения val
+scripts/prepare_data.py          полный проход: Parquet + EDA
+scripts/build_eda_notebook.py    исполняемый отчёт с графиками
+scripts/run_baseline_check.py    небольшой CatBoost: весь val, test и валидатор
+notebooks/01_data_eda.ipynb       выполненный EDA по всему датасету
 tests/                          сверка с эталоном и проверки данных/сабмитов
 experiments/log.md       таблица экспериментов
 models/nn/, features/    зона Августа и Антона
@@ -72,6 +77,97 @@ uv sync --locked --no-config --default-index https://pypi.org/simple
 Эталон считает DCG и IDCG с одинаковым отсечением для @10/@30.
 `ndcg_idcg30` сохранён для совместимости как экспериментальный вариант,
 он не входит в метрики предоставленного `calculate_metrics.py`.
+
+## Подготовленные данные и полный EDA
+
+```powershell
+$env:POLARS_MAX_THREADS = '2'
+$env:OPENBLAS_NUM_THREADS = '1'
+.\.venv\Scripts\python.exe -u -m scripts.prepare_data --data competition --out data/prepared --eda-out runs/eda
+.\.venv\Scripts\python.exe -m scripts.build_eda_notebook
+.\.venv\Scripts\python.exe -m scripts.make_validation_split --data competition --out data/prepared/val_folds.parquet
+```
+
+Подготовка обрабатывает по одному исходному шарду. При прерывании добавьте
+`--resume` к той же команде: записанные части переиспользуются только при
+совпадении версии формата, отпечатков источника/выходных файлов и числа строк.
+EDA при возобновлении пересчитывается по всем исходным данным. Файлы записываются
+через временный файл; `manifest.json` получает `complete=true` только после
+всех проверок, включая точное совпадение ключей test с шаблоном сабмита.
+
+```text
+data/prepared/
+  manifest.json
+  train/                       # аналогично val/ и test/
+    candidates/part-*.parquet   # одна строка = кандидат
+    feeds/part-*.parquet        # одна строка = лента, история хранится один раз
+runs/eda/
+  summary.json                 # полный EDA, без выборки
+  figures/                     # графики из ноутбука
+notebooks/
+  01_data_eda.ipynb             # код, выполненные таблицы и встроенные графики
+  eda_summary.json              # переносимый снимок агрегатов для ноутбука
+```
+
+Ключ строки кандидата: `(split, feed_id, candidate_index)`, где candidate_index —
+uint32, исходный номер кандидата внутри ленты с 0. Это технический ключ, не признак
+модели. В train встречаются повторные item_id в одной ленте с разными pos и f1–f5;
+они сохраняются без удаления или объединения меток. Число повторов и конфликтов
+меток отражено в EDA, сами строки — в `runs/eda/duplicate_candidates/`.
+Признаки уровня товара можно соединять по `(split, feed_id, item_id)` только
+как many-to-one; для признаков конкретного вхождения нужен candidate_index.
+В test ключи `(feed_id, item_id)` дополнительно сверяются с шаблоном сабмита.
+
+Колонки: `feed_id`, `timestamp`,
+`user_id`, `item_id`, `item_id__embedding_idx` — int32; `category_id` — int8;
+f1–f5 — float32; target — int8 только в train/val, pos — int16 только в train.
+`split` — строка. Таблица feeds содержит `(split, feed_id)`, timestamp, user_id,
+user_embedding, все поля history и feed_size. Истории присоединяют по ключу ленты.
+Это исходные признаки: сходство с историей и обученные признаки сохраняются
+отдельными группами. Таблицы эмбеддингов остаются в `competition/<split>/item_embeddings/`;
+их относительный путь указан через `raw_root_relative` в манифесте. При передаче
+команде подготовленных таблиц нужно также передать исходные таблицы эмбеддингов.
+
+Ленивое чтение без загрузки всего train в память:
+
+```python
+from src.common.preparation import scan_candidates
+
+val = scan_candidates("data/prepared", "val")
+print(val.select("feed_id", "candidate_index", "item_id", "f1", "target").limit(5).collect())
+```
+
+EDA включает размеры лент/историй, доли позитивов и лент без позитивов, CTR по
+позиции, пропуски эмбеддингов, точные пересечения user/item ID, распределения
+признаков/категорий/типов событий и объём по датам UTC. Нулевые user/item ID
+исключены из уникальных объектов и пересечений, их вхождения посчитаны отдельно.
+Таблицы и исходные данные игнорируются Git; ноутбук содержит только агрегаты.
+
+На полном train используйте чтение по частям или отбор целых лент: существующий
+`load_split()` загружает весь split в память, даже если подготовка была потоковой.
+
+## Обучение
+
+Проверка полной цепочки на подготовленных таблицах (один train-шард,
+100 итераций, CPU, f1–f5 и категория):
+
+```powershell
+.\.venv\Scripts\python.exe -u -m scripts.run_baseline_check --data data/prepared --raw competition --out runs/baseline-check-001
+```
+
+Нужны `data/prepared/val_folds.parquet` и скачанный эталон метрики.
+Параметры размера прогона: `--train-parts`, `--iterations`, `--depth`,
+`--seed`, `--threads`. Лучший чекпойнт выбирается только по NDCG@30
+псевдо-Public; псевдо-Private не передаётся в обучение или early stopping.
+Все ленты val оцениваются с float32-скорами; full/@10/@30 сверяются с эталоном
+отдельно для всего val и обеих временных частей. Это проверочный прогон
+на небольшой части train, не финальное обучение.
+
+Выходы: `model.cbm`, `validation_predictions.parquet`, `submission.parquet`,
+`run.json` с параметрами, коммитом/хешами кода, метриками и результатом валидатора.
+Val-предсказания — holdout, не OOF: псевдо-Public участвовал в выборе итерации.
+Сабмит создаётся локально. Скрипт не отправляет его на платформу и не
+перезаписывает существующую папку прогона.
 
 Обучение и инференс (bash, после активации окружения):
 

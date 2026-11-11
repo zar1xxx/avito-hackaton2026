@@ -9,6 +9,7 @@ dependencies = [
     "polars==1.14.0",
     "pandas>=2.2,<3",
     "pyarrow>=18,<24",
+    "matplotlib>=3.9,<4",
 ]
 
 [tool.uv]
