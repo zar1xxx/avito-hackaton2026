@@ -19,18 +19,32 @@ FLOAT_FEATS = ["f1", "f2", "f3", "f4", "f5"]
 
 
 def list_parts(data_root: str | Path, split: str) -> list[Path]:
-    parts = sorted((Path(data_root) / split / "impressions").glob("part-*.parquet"))
+    impressions_dir = Path(data_root) / split / "impressions"
+    parts = sorted(impressions_dir.glob("part-*.parquet"))
     if not parts:
-        raise FileNotFoundError(f"нет part-*.parquet в {data_root}/{split}/impressions")
+        # Резервный поиск любых .parquet файлов в impressions, если они названы иначе
+        parts = sorted(impressions_dir.glob("*.parquet"))
+    if not parts:
+        # Резервный поиск, если parquet лежат прямо в папке split
+        parts = sorted((Path(data_root) / split).glob("*.parquet"))
+    if not parts:
+        raise FileNotFoundError(f"нет .parquet в {impressions_dir} или {Path(data_root) / split}")
     return parts
 
 
 def load_embeddings(data_root: str | Path, split: str) -> np.memmap:
+    """Таблица эмбеддингов именно этого сплита. У каждого сплита своя таблица и свои индексы
+    (item_id общий, строки таблицы — разные), поэтому подставлять таблицу другого сплита нельзя:
+    векторы получатся неверными без всякой ошибки. Нет таблицы — падаем."""
     d = Path(data_root) / split / "item_embeddings"
+    if not (d / "data.meta").exists():
+        raise FileNotFoundError(
+            f"нет {d / 'data.meta'}: у каждого сплита должна быть своя таблица эмбеддингов "
+            "(подстановка таблицы train для val/test даёт неверные векторы)")
     meta = json.loads((d / "data.meta").read_text())
     return np.memmap(
         d / "data.memmap", dtype=meta["dtype"], mode="r",
-        shape=tuple(meta["shape"]), order=meta["order"],
+        shape=tuple(meta["shape"]), order=meta.get("order", "C"),
     )
 
 
