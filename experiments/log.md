@@ -44,3 +44,16 @@ Cosine-кеш покрывает один train-шард и весь val/test. �
 uv run --locked python -m scripts.run_baseline_check --feature-root data/features/cosine --feature-root data/features/infeed-check --out runs/baseline-infeed-001
 uv run --locked python -m scripts.compare_baselines --baseline runs/baseline-cosine-001 --candidate runs/baseline-infeed-001 --out runs/baseline-infeed-001/comparison.json
 ```
+
+
+## Полный кеш и сквозная воспроизводимость
+
+Признаки внутри ленты материализованы для всех 640 файлов: 246 745 836 кандидатов train, 1 389 971 val, 2 904 806 test; всего 251 040 613 строк, около 7,1 ГиБ. Проверены число строк, схемы и отпечатки каждого файла; формулы дополнительно сверены независимо на 22 реальных лентах, включая ленту с повторным товаром. [Аудит полного кеша](infeed_cache_audit.json).
+
+Единая команда `scripts.reproduce_data --baseline-out` проверена на реальных данных с переиспользованием проверенных кешей. Cosine-baseline обучен заново на одном train-шарде. Схемы, ключи и все значения val/test-предсказаний совпали с исходным прогоном; Float32-скоры совпали побитово. Метрики совпали, валидатор пройден. [Проверка воспроизводимости](reproduction_check_001.json).
+
+```powershell
+uv run --locked python -m scripts.reproduce_data --raw competition --resume --baseline-out runs/reproduced-baseline-001
+```
+
+Обычная команда не материализует необязательную группу внутри ленты. Для её полного построения или проверки существующего кеша добавьте `--infeed data/features/infeed`. Default-модель остаётся cosine-baseline; негативный/неопределённый результат новой группы не скрывается и не заменяет принятый baseline.
