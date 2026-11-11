@@ -367,5 +367,7 @@ def collate_ranking_batch(batch: list[dict[str, Any]]) -> dict[str, torch.Tensor
         result["target"] = target
     if has_pos:
         result["pos"] = pos
+    if "sample_weight" in batch[0]:
+        result["sample_weight"] = torch.tensor([item.get("sample_weight", 1.0) for item in batch], dtype=torch.float32)
 
     return result

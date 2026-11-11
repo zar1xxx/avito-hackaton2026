@@ -233,12 +233,14 @@ class FeedRankingModel(nn.Module):
         self,
         batch: dict[str, torch.Tensor],
         use_pos_bias: bool = False,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return_features: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor] | tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
         """
         Args:
             batch: словарь тензоров от collate_ranking_batch.
             use_pos_bias: если True и в batch есть 'pos', к скору добавляется position bias.
                           На val/test должно быть False!
+            return_features: если True, дополнительно возвращает словарь косинусных сходств.
                           
         Returns:
             scores: [B, M] — итоговые скоры для обучения (с позицией, если use_pos_bias=True).
@@ -322,5 +324,13 @@ class FeedRankingModel(nn.Module):
         # Маскируем паддинги большим отрицательным значением
         total_scores = total_scores.masked_fill(~cand_mask, -1e9)
         main_scores = main_scores.masked_fill(~cand_mask, -1e9)
+
+        if return_features:
+            feats_dict = {
+                "dot_user": dot_u.squeeze(-1).masked_fill(~cand_mask, 0.0),
+                "dot_hist": dot_h.squeeze(-1).masked_fill(~cand_mask, 0.0),
+                "dot_uh": dot_uh.squeeze(-1).masked_fill(~cand_mask, 0.0),
+            }
+            return total_scores, main_scores, feats_dict
 
         return total_scores, main_scores

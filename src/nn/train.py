@@ -10,6 +10,8 @@
 from __future__ import annotations
 
 import argparse
+import os
+import random
 import sys
 import time
 from pathlib import Path
@@ -29,17 +31,65 @@ from src.nn.dataset import NUM_CAND_FEATS, FeedRankingDataset, collate_ranking_b
 from src.nn.model import FeedRankingModel
 
 
+def seed_everything(seed: int) -> None:
+    """Фиксирует все генераторы случайных чисел для воспроизводимости."""
+    random.seed(seed)
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+
+def apply_in_feed_mixup(batch: dict[str, torch.Tensor], alpha: float) -> dict[str, torch.Tensor]:
+    """Применяет внутрилентовый MixUp для эмбеддингов кандидатов, признаков и таргетов."""
+    if alpha <= 0.0:
+        return batch
+
+    cand_mask = batch["candidate_mask"]
+    b, _ = cand_mask.shape
+
+    cand_emb = batch["cand_emb"].clone()
+    cand_feats = batch["cand_features"].clone()
+    target = batch["target"].clone()
+    has_emb = batch["cand_has_emb_mask"].clone()
+
+    lam = float(np.random.beta(alpha, alpha))
+    lam = max(lam, 1.0 - lam)  # сохраняем основной идентификатор кандидата (lam >= 0.5)
+
+    for i in range(b):
+        m_i = int(cand_mask[i].sum().item())
+        if m_i <= 1:
+            continue
+        perm = torch.randperm(m_i, device=cand_emb.device)
+        cand_emb[i, :m_i] = lam * cand_emb[i, :m_i] + (1.0 - lam) * cand_emb[i, perm]
+        cand_feats[i, :m_i] = lam * cand_feats[i, :m_i] + (1.0 - lam) * cand_feats[i, perm]
+        target[i, :m_i] = lam * target[i, :m_i] + (1.0 - lam) * target[i, perm]
+        has_emb[i, :m_i] = has_emb[i, :m_i] | has_emb[i, perm]
+
+    batch["cand_emb"] = cand_emb
+    batch["cand_features"] = cand_feats
+    batch["target"] = target
+    batch["cand_has_emb_mask"] = has_emb
+    return batch
+
+
 def listnet_loss(
     logits: torch.Tensor,
     targets: torch.Tensor,
     mask: torch.Tensor,
+    logit_temperature: float = 1.0,
     target_temperature: float = 1.0,
 ) -> torch.Tensor:
-    """ListNet ranking loss с маскированием паддингов."""
-    masked_logits = logits.masked_fill(~mask, -1e9)
+    """ListNet ranking loss с Temperature Scaling и маскированием паддингов."""
+    scaled_logits = logits / max(logit_temperature, 1e-5)
+    masked_logits = scaled_logits.masked_fill(~mask, -1e9)
     pred_log_probs = F.log_softmax(masked_logits, dim=-1)
 
-    scaled_targets = (targets * 3.0) / target_temperature
+    scaled_targets = (targets * 3.0) / max(target_temperature, 1e-5)
     masked_targets = scaled_targets.masked_fill(~mask, -1e9)
     true_probs = F.softmax(masked_targets, dim=-1)
 
@@ -103,11 +153,17 @@ def evaluate_ndcg(
     return all_variants(feed_ids_cat, targets_cat, scores_cat)
 
 
-def train(args: argparse.Namespace) -> None:
+def train(args: argparse.Namespace) -> float:
+    seed = getattr(args, "seed", 42)
+    seed_everything(seed)
+
     device = torch.device(args.device if args.device else ("cuda" if torch.cuda.is_available() else "cpu"))
+    mixup_alpha = getattr(args, "mixup_alpha", 0.0)
+    temperature = getattr(args, "temperature", 1.0)
+
     print("=" * 75)
-    print(f"Запуск обучения: {args.data} | Device: {device} | Loss: {args.loss}")
-    print(f"Сплиты: train='{args.train_split}', val='{args.val_split}'")
+    print(f"Запуск обучения: {args.data} | Device: {device} | Loss: {args.loss} (T={temperature}) | Seed: {seed}")
+    print(f"Сплиты: train='{args.train_split}', val='{args.val_split}' | MixUp alpha: {mixup_alpha}")
     print(f"Debias: {'ВКЛЮЧЕН' if args.use_pos_bias else 'ОТКЛЮЧЕН'} | EarlyStopping patience: {args.patience}")
     print("=" * 75)
 
@@ -129,10 +185,14 @@ def train(args: argparse.Namespace) -> None:
 
     print(f"Train лент: {len(train_dataset)}, Val лент: {len(val_dataset)}")
 
+    dl_generator = torch.Generator()
+    dl_generator.manual_seed(seed)
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
+        generator=dl_generator,
         collate_fn=collate_ranking_batch,
         num_workers=args.num_workers,
         pin_memory=(device.type == "cuda"),
@@ -204,12 +264,15 @@ def train(args: argparse.Namespace) -> None:
                 if isinstance(v, torch.Tensor):
                     batch[k] = v.to(device, non_blocking=True)
 
+            if mixup_alpha > 0.0:
+                batch = apply_in_feed_mixup(batch, mixup_alpha)
+
             total_scores, _ = model(batch, use_pos_bias=args.use_pos_bias)
             cand_mask = batch["candidate_mask"]
             target = batch["target"]
 
             if args.loss == "listnet":
-                loss = listnet_loss(total_scores, target, cand_mask)
+                loss = listnet_loss(total_scores, target, cand_mask, logit_temperature=temperature)
             else:
                 loss = masked_bce_loss(total_scores, target, cand_mask)
 
@@ -241,6 +304,12 @@ def train(args: argparse.Namespace) -> None:
         cur_lr = optimizer.param_groups[0]["lr"]
 
         is_best = cur_ndcg > best_ndcg
+        if is_best:
+            best_ndcg = cur_ndcg
+            patience_counter = 0
+        else:
+            patience_counter += 1
+
         ckpt_data = {
             "epoch": epoch,
             "model_config": model_config,
@@ -252,13 +321,8 @@ def train(args: argparse.Namespace) -> None:
             "args": vars(args),
         }
         torch.save(ckpt_data, out_dir / "last_model.pt")
-
         if is_best:
-            best_ndcg = cur_ndcg
-            patience_counter = 0
             torch.save(ckpt_data, out_dir / "best_model.pt")
-        else:
-            patience_counter += 1
 
         # Запись эпохи в history.csv
         avg_train_loss = float(np.mean(epoch_losses)) if epoch_losses else 0.0
@@ -287,6 +351,7 @@ def train(args: argparse.Namespace) -> None:
     total_time = time.perf_counter() - total_start
     print(f"\n[DONE] Обучение завершено за {total_time:.2f}с. Лучший Val NDCG(full): {best_ndcg:.4f}")
     print(f"Чекпоинт сохранен в: {out_dir / 'best_model.pt'}")
+    return best_ndcg
 
 
 def main() -> None:
@@ -310,9 +375,12 @@ def main() -> None:
     parser.add_argument("--max-feeds", type=int, default=None, help="Ограничить общее количество читаемых лент (защита от OOM)")
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--loss", choices=["listnet", "bce"], default="listnet")
+    parser.add_argument("--mixup-alpha", type=float, default=0.0, help="Beta(alpha, alpha) MixUp для эмбеддингов кандидатов (0 = выкл)")
+    parser.add_argument("--temperature", type=float, default=1.0, help="Температура логитов в ListNet")
     parser.add_argument("--use-pos-bias", action="store_true", default=True, help="Включить голову debias для pos на train")
     parser.add_argument("--no-pos-bias", dest="use_pos_bias", action="store_false")
     parser.add_argument("--log-every", type=int, default=5)
+    parser.add_argument("--seed", type=int, default=42, help="Seed для воспроизводимости")
     parser.add_argument("--device", default=None)
     args = parser.parse_args()
 
