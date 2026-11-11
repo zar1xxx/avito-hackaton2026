@@ -168,9 +168,11 @@ class FeedRankingModel(nn.Module):
         max_hist_len: int = 256,
         max_position: int = 100,
         dropout: float = 0.15,
+        use_set_attention: bool = True,
     ) -> None:
         super().__init__()
         self.d_model = d_model
+        self.use_set_attention = use_set_attention
 
         # 1. Энкодер истории
         self.hist_encoder = HistoryTransformerEncoder(
@@ -205,6 +207,17 @@ class FeedRankingModel(nn.Module):
             batch_first=True,
         )
         self.cross_norm = nn.LayerNorm(d_model)
+
+        # 4.5. Listwise Set-Attention: Self-Attention между кандидатами внутри ленты
+        if self.use_set_attention:
+            self.set_attn = nn.MultiheadAttention(
+                embed_dim=d_model,
+                num_heads=nhead,
+                dropout=dropout,
+                batch_first=True,
+            )
+            self.set_norm = nn.LayerNorm(d_model)
+            self.set_dropout = nn.Dropout(dropout)
 
         # 5. Основная голова скоринга (Контентная релевантность)
         head_in_dim = d_model * 3 + 3 + 1 + num_cand_feats
@@ -286,6 +299,22 @@ class FeedRankingModel(nn.Module):
 
         attn_out = attn_out * has_any_hist.unsqueeze(-1).float()
         cand_hist_ctx = self.cross_norm(cand_repr + attn_out) # Residual
+
+        # 4.5. Listwise Set-Attention между кандидатами внутри ленты
+        if self.use_set_attention:
+            has_any_cand = cand_mask.any(dim=1, keepdim=True) # [B, 1]
+            safe_cand_mask = cand_mask.clone()
+            safe_cand_mask[:, 0] = safe_cand_mask[:, 0] | (~has_any_cand.squeeze(1))
+
+            set_out, _ = self.set_attn(
+                query=cand_hist_ctx,
+                key=cand_hist_ctx,
+                value=cand_hist_ctx,
+                key_padding_mask=~safe_cand_mask,
+            ) # [B, M, d_model]
+            set_out = set_out * cand_mask.unsqueeze(-1).float()
+            cand_hist_ctx = self.set_norm(cand_hist_ctx + self.set_dropout(set_out))
+            cand_hist_ctx = cand_hist_ctx * cand_mask.unsqueeze(-1).float()
 
         # 5. Скалярные произведения и сходства
         u_norm = F.normalize(user_repr, p=2, dim=-1).unsqueeze(1) # [B, 1, d_model]

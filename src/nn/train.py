@@ -160,11 +160,12 @@ def train(args: argparse.Namespace) -> float:
     device = torch.device(args.device if args.device else ("cuda" if torch.cuda.is_available() else "cpu"))
     mixup_alpha = getattr(args, "mixup_alpha", 0.0)
     temperature = getattr(args, "temperature", 1.0)
+    use_set_attention = getattr(args, "use_set_attention", True)
 
     print("=" * 75)
     print(f"Запуск обучения: {args.data} | Device: {device} | Loss: {args.loss} (T={temperature}) | Seed: {seed}")
     print(f"Сплиты: train='{args.train_split}', val='{args.val_split}' | MixUp alpha: {mixup_alpha}")
-    print(f"Debias: {'ВКЛЮЧЕН' if args.use_pos_bias else 'ОТКЛЮЧЕН'} | EarlyStopping patience: {args.patience}")
+    print(f"Debias: {'ВКЛЮЧЕН' if args.use_pos_bias else 'ОТКЛЮЧЕН'} | Set-Attention: {'ВКЛЮЧЕН' if use_set_attention else 'ОТКЛЮЧЕН'} | Patience: {args.patience}")
     print("=" * 75)
 
     # 1. Загрузка данных
@@ -215,6 +216,7 @@ def train(args: argparse.Namespace) -> float:
         "num_cand_feats": NUM_CAND_FEATS,
         "max_hist_len": args.max_hist_len,
         "dropout": args.dropout,
+        "use_set_attention": use_set_attention,
     }
 
     # 2. Инициализация продвинутой модели
@@ -379,6 +381,8 @@ def main() -> None:
     parser.add_argument("--temperature", type=float, default=1.0, help="Температура логитов в ListNet")
     parser.add_argument("--use-pos-bias", action="store_true", default=True, help="Включить голову debias для pos на train")
     parser.add_argument("--no-pos-bias", dest="use_pos_bias", action="store_false")
+    parser.add_argument("--use_set_attention", "--use-set-attention", dest="use_set_attention", action="store_true", default=True, help="Включить Self-Attention между кандидатами ленты")
+    parser.add_argument("--no_set_attention", "--no-set-attention", dest="use_set_attention", action="store_false", help="Отключить Set-Attention (для сравнения с baseline)")
     parser.add_argument("--log-every", type=int, default=5)
     parser.add_argument("--seed", type=int, default=42, help="Seed для воспроизводимости")
     parser.add_argument("--device", default=None)

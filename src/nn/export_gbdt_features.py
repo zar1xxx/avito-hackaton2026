@@ -156,6 +156,7 @@ def train_fold_model(
         num_cand_feats=NUM_CAND_FEATS,
         max_hist_len=args.max_hist_len,
         dropout=args.dropout,
+        use_set_attention=getattr(args, "use_set_attention", True),
     ).to(device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
@@ -374,6 +375,8 @@ def main() -> None:
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--use-pos-bias", action="store_true", default=True)
     parser.add_argument("--no-pos-bias", dest="use_pos_bias", action="store_false")
+    parser.add_argument("--use_set_attention", "--use-set-attention", dest="use_set_attention", action="store_true", default=True)
+    parser.add_argument("--no_set_attention", "--no-set-attention", dest="use_set_attention", action="store_false")
     parser.add_argument("--max-parts", type=int, default=None)
     parser.add_argument("--max-feeds", type=int, default=None)
     parser.add_argument("--num-workers", type=int, default=0)

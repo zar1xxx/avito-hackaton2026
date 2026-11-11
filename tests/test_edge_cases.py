@@ -214,3 +214,31 @@ def test_varying_candidate_sizes(ranking_model):
     valid_mask = batch["candidate_mask"]
     assert not torch.isnan(main_scores[valid_mask]).any()
     assert not torch.isinf(main_scores[valid_mask]).any()
+
+
+def test_set_attention_padding_isolation_and_flag(ranking_model):
+    """6. Проверка изоляции паддингов в Set-Attention и флага use_set_attention=False."""
+    s_small = make_dummy_sample(feed_id=10, m=3, h=8)
+    s_large = make_dummy_sample(feed_id=11, m=20, h=8)
+
+    with torch.no_grad():
+        # Прогон ленты на 3 элемента без паддинга
+        b_solo = collate_ranking_batch([s_small])
+        _, scores_solo = ranking_model(b_solo, use_pos_bias=False)
+
+        # Прогон той же ленты с паддингом до 20 кандидатов
+        b_padded = collate_ranking_batch([s_small, s_large])
+        _, scores_padded = ranking_model(b_padded, use_pos_bias=False)
+
+    assert torch.allclose(scores_solo[0], scores_padded[0, :3], atol=1e-5), (
+        "Паддинги не должны влиять на предсказания Set-Attention!"
+    )
+
+    # Проверка модели без Set-Attention
+    model_no_set = FeedRankingModel(
+        emb_dim=128, d_model=64, nhead=2, num_categories=100,
+        num_cand_feats=NUM_CAND_FEATS, use_set_attention=False,
+    )
+    model_no_set.eval()
+    _, scores_no_set = model_no_set(b_padded, use_pos_bias=False)
+    assert not torch.isnan(scores_no_set[b_padded["candidate_mask"]]).any()
