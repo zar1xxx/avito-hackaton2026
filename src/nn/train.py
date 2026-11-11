@@ -336,7 +336,7 @@ def train(args: argparse.Namespace) -> float:
 
     # 3. Начальная оценка до обучения
     init_metrics = evaluate_ndcg(model, val_loader, device, cv_mode=cv_mode, use_amp=use_amp)
-    init_target = init_metrics["ndcg_private"] if cv_mode == "danya" else init_metrics["ndcg_full"]
+    init_target = init_metrics["ndcg_public"] if cv_mode == "danya" else init_metrics["ndcg_full"]
     print(
         f"Initial Val NDCG (без обучения): priv={init_metrics['ndcg_private']:.4f} | "
         f"pub={init_metrics['ndcg_public']:.4f} | full={init_metrics['ndcg_full']:.4f} | @30={init_metrics['ndcg@30']:.4f}"
@@ -416,7 +416,7 @@ def train(args: argparse.Namespace) -> float:
 
         # Валидация после эпохи
         val_metrics = evaluate_ndcg(model, val_loader, device, cv_mode=cv_mode, use_amp=use_amp)
-        cur_ndcg = val_metrics["ndcg_private"] if cv_mode == "danya" else val_metrics["ndcg_full"]
+        cur_ndcg = val_metrics["ndcg_public"] if cv_mode == "danya" else val_metrics["ndcg_full"]
 
         # Шаг шедулера ReduceLROnPlateau (для cosine шаг делается по батчам)
         if scheduler_type == "plateau":
@@ -465,11 +465,11 @@ def train(args: argparse.Namespace) -> float:
 
         # Early Stopping
         if patience_counter >= args.patience:
-            print(f"\n[EarlyStopping] {'pseudo-private ' if cv_mode == 'danya' else ''}NDCG не улучшался {args.patience} эпох. Остановка обучения!")
+            print(f"\n[EarlyStopping] {'pseudo-public ' if cv_mode == 'danya' else ''}NDCG не улучшался {args.patience} эпох. Остановка обучения!")
             break
 
     total_time = time.perf_counter() - total_start
-    metric_label = "pseudo-private" if cv_mode == "danya" else "full"
+    metric_label = "pseudo-public (выбор чекпоинта); pseudo-private только для отчёта" if cv_mode == "danya" else "full"
     print(f"\n[DONE] Обучение завершено за {total_time:.2f}с. Лучший Val NDCG ({metric_label}): {best_ndcg:.4f}")
     print(f"Чекпоинт сохранен в: {out_dir / 'best_model.pt'}")
     return best_ndcg
