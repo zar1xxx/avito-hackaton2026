@@ -10,6 +10,8 @@ from eval.make_synthetic import make_split
 from scripts.run_baseline_check import FEATURES, load_validation, pool, run
 from src.common.preparation import prepare_dataset
 from src.common.validation import make_validation_split
+from src.common.embedding_catalogue import build_catalogue
+from src.common.similarity import build_features, feature_names
 
 
 REFERENCE = Path(__file__).resolve().parents[1] / 'competition/baseline/calculate_metrics.py'
@@ -66,6 +68,17 @@ class BaselineCheckTests(unittest.TestCase):
             .write_parquet(self.prepared / 'val_folds.parquet')
         with self.assertRaisesRegex(ValueError, 'strictly precede'):
             load_validation(self.prepared)
+
+    @unittest.skipUnless(REFERENCE.is_file(), 'download the supplied evaluator to compare cosine features')
+    def test_cosine_feature_baseline_end_to_end(self):
+        catalogue, features = self.prepared.parent / 'catalogue', self.prepared.parent / 'features'
+        build_catalogue(self.raw, catalogue)
+        build_features(self.raw, self.prepared, catalogue, features)
+        report = run(self.prepared, self.raw, self.out, iterations=3, depth=2, threads=1,
+                     reference_path=REFERENCE, feature_root=features)
+        self.assertEqual(report['features'], FEATURES + feature_names())
+        self.assertEqual(report['submission']['validator'], 'passed')
+        self.assertEqual(report['validation']['pseudo_private']['feeds'], 7)
 
 
 if __name__ == '__main__':

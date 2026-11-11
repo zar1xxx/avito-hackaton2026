@@ -27,6 +27,9 @@ scripts/make_validation_split.py создание таблицы разбиен�
 scripts/prepare_data.py          полный проход: Parquet + EDA
 scripts/build_eda_notebook.py    исполняемый отчёт с графиками
 scripts/run_baseline_check.py    небольшой CatBoost: весь val, test и валидатор
+scripts/reproduce_data.py        одна команда для данных, EDA, фолдов и cosine-кеша
+src/common/embedding_catalogue.py общий каталог версий эмбеддингов
+src/common/similarity.py         пакетные признаки сходства
 notebooks/01_data_eda.ipynb       выполненный EDA по всему датасету
 tests/                          сверка с эталоном и проверки данных/сабмитов
 experiments/log.md       таблица экспериментов
@@ -148,11 +151,72 @@ EDA включает размеры лент/историй, доли позит
 
 ## Обучение
 
+### Команда воспроизведения для команды
+
+Каждый участник скачивает `competition.zip` с платформы соревнования и
+распаковывает его в `competition/`. Дополнительный уровень `competition/competition/`
+определяется автоматически. Из корня репозитория:
+
+```powershell
+uv run --locked python -m scripts.reproduce_data --raw competition --resume
+```
+
+Команда проверяет и подготавливает все исходные таблицы, EDA-ноутбук в `runs/eda/`,
+разбиение val, общий каталог эмбеддингов и cosine-кеш для первого train-шарда,
+**всего val и всего test**. Подготовленные базовые таблицы при этом полные,
+все 512 train-шардов. Проверенный кеш переиспользуется; повреждённые файлы
+не считаются готовыми. Передача архивов и тяжёлых таблиц через Git не нужна.
+
+По умолчанию cosine-кеш соответствует небольшому проверочному прогону.
+Полная материализация cosine-признаков train на текущем CPU может занять
+несколько часов. Она запускается явно с `--all-train-features`; промежуточный
+объём — через `--feature-train-parts N`. Покрытие каждого split записано в
+`data/features/cosine/manifest.json`: `complete` относится к запрошенному
+покрытию, `all_train_parts` показывает наличие всех train-шардов. Потребитель
+читает перечень файлов из манифеста и отклоняет незакешированные шарды.
+
+### Каталог эмбеддингов и признаки сходства
+
+Для одного item_id векторы разных split могут различаться. Полный побайтовый
+аудит подтвердил различия у 17,30% общих товаров train/val, 27,92% train/test
+и 20,60% val/test. Поэтому ключ версии — **`(split, item_id)`**. Каталог
+`data/embedding_catalogue/` объединяет 83 260 664 товара, плотные индексы и
+Parquet-таблицу item_id с индексами всех трёх split. Векторы хранятся в исходных
+memmap-файлах, каталог ссылается на них по относительному пути; повторная
+копия 11 ГБ векторов не создаётся. Внутри split проверена согласованность
+всех соответствий item_id и векторов.
+
+```python
+from src.common.embedding_catalogue import EmbeddingCatalogue
+
+store = EmbeddingCatalogue("data/embedding_catalogue")
+vectors = store.gather("val", item_ids, original_missing=(embedding_indices == -1))
+```
+
+Cosine-группа `data/features/cosine/` имеет ключ `(split, feed_id, candidate_index)`
+и контрольную колонку item_id. Признаки: наличие эмбеддинга кандидата,
+cos(user, item), длина истории и для последних 10/50 **исходных событий** —
+число доступных эмбеддингов, mean/max cosine. Пропуски исключаются внутри
+выбранного окна, не заменяются более старыми событиями. При пустой истории
+cosine равен 0. Математика выполняется в float32; исходный `-1` сохраняется,
+версии и пропуски не подменяются данными других split. Изменённый кеш
+проверяется по исходным файлам, версии расчёта и числу строк.
+
+Самостоятельная сборка и расширение кеша:
+
+```powershell
+uv run --locked python -m scripts.build_embedding_catalogue --data competition --out data/embedding_catalogue --resume
+uv run --locked python -m scripts.build_similarity_features --train-parts 1 --resume
+```
+
+### Проверка моделей
+
 Проверка полной цепочки на подготовленных таблицах (один train-шард,
 100 итераций, CPU, f1–f5 и категория):
 
 ```powershell
 .\.venv\Scripts\python.exe -u -m scripts.run_baseline_check --data data/prepared --raw competition --out runs/baseline-check-001
+.\.venv\Scripts\python.exe -u -m scripts.run_baseline_check --data data/prepared --raw competition --feature-root data/features/cosine --out runs/baseline-cosine-001
 ```
 
 Нужны `data/prepared/val_folds.parquet` и скачанный эталон метрики.

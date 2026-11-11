@@ -47,8 +47,8 @@ def load_validation(root: Path) -> pl.DataFrame:
     return frame.sort('feed_id', 'candidate_index')
 
 
-def pool(frame: pl.DataFrame, labeled=True) -> Pool:
-    return Pool(frame.select(FEATURES).to_pandas(),
+def pool(frame: pl.DataFrame, labeled=True, features=None) -> Pool:
+    return Pool(frame.select(features or FEATURES).to_pandas(),
                 label=frame['target'].to_numpy() if labeled else None,
                 group_id=frame['feed_id'].to_numpy(), cat_features=['category_id'])
 
@@ -63,7 +63,7 @@ def git_snapshot():
 
 
 def run(root: Path, raw: Path, output: Path, *, train_parts=1, iterations=100,
-        depth=6, seed=42, threads=2, reference_path=REFERENCE):
+        depth=6, seed=42, threads=2, reference_path=REFERENCE, feature_root=None):
     root, raw, output = (Path(path).resolve() for path in (root, raw, output))
     if output.exists():
         raise FileExistsError(f'choose a new run directory: {output}')
@@ -83,12 +83,26 @@ def run(root: Path, raw: Path, output: Path, *, train_parts=1, iterations=100,
     code_root = Path(__file__).resolve().parents[1]
     tracked_code = ['scripts/run_baseline_check.py', 'scripts/validate_submission.py',
                     'src/common/preparation.py', 'src/common/metric.py']
+    model_features = list(FEATURES)
+    feature_metadata = None
+    if feature_root is not None:
+        from src.common.similarity import attach_features
+        feature_root = Path(feature_root).resolve()
+        feature_manifest_path = feature_root / 'manifest.json'
+        feature_manifest = json.loads(feature_manifest_path.read_text(encoding='utf-8'))
+        if not feature_manifest.get('complete'):
+            raise ValueError('similarity feature set is incomplete')
+        model_features += feature_manifest['features']
+        tracked_code += ['src/common/similarity.py', 'src/common/embedding_catalogue.py']
+        feature_metadata = {'manifest_sha256': hashlib.sha256(feature_manifest_path.read_bytes()).hexdigest(),
+                            'features': feature_manifest['features'],
+                            'vector_policy': feature_manifest['vector_policy']}
     report = {
         'complete': False, 'purpose': 'infrastructure baseline, small training subset',
         'git': git_snapshot(), 'code_sha256': {name: hashlib.sha256((code_root / name).read_bytes()).hexdigest() for name in tracked_code},
         'prepared_manifest_sha256': hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
         'reference_sha256': hashlib.sha256(reference_path.read_bytes()).hexdigest(),
-        'features': FEATURES, 'train_parts': [part['source'] for part in selected],
+        'features': model_features, 'similarity': feature_metadata, 'train_parts': [part['source'] for part in selected],
         'selection': 'best NDCG@30 on pseudo-Public; pseudo-Private never passed to fit',
         'score_dtype': 'float32', 'score_ties': 'unmodified model scores; pessimistic reference tie handling',
         'parameters': {'iterations': iterations, 'depth': depth, 'seed': seed, 'threads': threads,
@@ -96,10 +110,14 @@ def run(root: Path, raw: Path, output: Path, *, train_parts=1, iterations=100,
     }
     output.mkdir(parents=True)
     write_json(output / 'run.json', report)
-    columns = ['feed_id', 'candidate_index', 'target', *FEATURES]
+    columns = ['feed_id', 'candidate_index', 'item_id', 'target', *FEATURES]
     train = pl.concat([pl.read_parquet(root / part['candidate_path'], columns=columns) for part in selected])\
         .sort('feed_id', 'candidate_index')
     val = load_validation(root)
+    if feature_root is not None:
+        train, _ = attach_features(train, feature_root, 'train', [entry['source'] for entry in selected])
+        val, _ = attach_features(val, feature_root, 'val', [entry['source'] for entry in manifest['splits']['val']['parts']])
+        train, val = train.sort('feed_id', 'candidate_index'), val.sort('feed_id', 'candidate_index')
     if val.height != manifest['splits']['val']['candidates']:
         raise ValueError('val candidate count differs from prepared manifest')
     public = val.filter(pl.col('leaderboard_split') == 'public')
@@ -113,7 +131,7 @@ def run(root: Path, raw: Path, output: Path, *, train_parts=1, iterations=100,
                           learning_rate=.1, eval_metric='NDCG:top=30;type=Base',
                           random_seed=seed, thread_count=threads, allow_writing_files=False,
                           used_ram_limit='1024mb')
-    train_pool, public_pool = pool(train), pool(public)
+    train_pool, public_pool = pool(train, features=model_features), pool(public, features=model_features)
     model.fit(train_pool, eval_set=public_pool, use_best_model=True,
               early_stopping_rounds=25, verbose=25)
     model.save_model(str(output / 'model.cbm'))
@@ -121,7 +139,7 @@ def run(root: Path, raw: Path, output: Path, *, train_parts=1, iterations=100,
     report['model_parameters'] = model.get_all_params()
     del train_pool, public_pool, train, public
     gc.collect()
-    scores = model.predict(pool(val, labeled=False), thread_count=threads).astype(np.float32)
+    scores = model.predict(pool(val, labeled=False, features=model_features), thread_count=threads).astype(np.float32)
     scored = val.select('feed_id', 'candidate_index', 'item_id', 'target', 'leaderboard_split')\
         .with_columns(pl.Series('score', scores, dtype=pl.Float32))
     write_parquet_atomic(scored, output / 'validation_predictions.parquet')
@@ -143,8 +161,10 @@ def run(root: Path, raw: Path, output: Path, *, train_parts=1, iterations=100,
     reloaded.load_model(str(output / 'model.cbm'))
     predictions = []
     for index, part in enumerate(manifest['splits']['test']['parts']):
-        batch = pl.read_parquet(root / part['candidate_path'], columns=['feed_id', 'item_id', *FEATURES])
-        score = reloaded.predict(pool(batch, labeled=False), thread_count=threads).astype(np.float32)
+        batch = pl.read_parquet(root / part['candidate_path'], columns=['feed_id', 'candidate_index', 'item_id', *FEATURES])
+        if feature_root is not None:
+            batch, _ = attach_features(batch, feature_root, 'test', [part['source']])
+        score = reloaded.predict(pool(batch, labeled=False, features=model_features), thread_count=threads).astype(np.float32)
         predictions.append(batch.select('feed_id', 'item_id').with_columns(pl.Series('score', score, dtype=pl.Float32)))
         if (index + 1) % 16 == 0:
             print(f"test: {index + 1}/{len(manifest['splits']['test']['parts'])} shards", flush=True)
@@ -178,9 +198,10 @@ def main():
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--threads', type=int, default=2)
     parser.add_argument('--reference', type=Path, default=REFERENCE)
+    parser.add_argument('--feature-root', type=Path, help='attach an occurrence-keyed cosine feature group')
     args = parser.parse_args()
     run(args.data, args.raw, args.out, train_parts=args.train_parts, iterations=args.iterations,
-        depth=args.depth, seed=args.seed, threads=args.threads, reference_path=args.reference)
+        depth=args.depth, seed=args.seed, threads=args.threads, reference_path=args.reference, feature_root=args.feature_root)
 
 
 if __name__ == '__main__':

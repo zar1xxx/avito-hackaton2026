@@ -61,9 +61,10 @@ def build(summary_path: Path, output_path: Path):
         ROOT = Path.cwd()
         if not (ROOT / "pyproject.toml").exists():
             ROOT = ROOT.parent
-        source = ROOT / "runs/eda/summary.json"
-        if not source.exists():
-            source = ROOT / "notebooks/eda_summary.json"
+        source = globals().get("_eda_summary_path")
+        if source is None:
+            source = next(path for path in [Path("eda_summary.json"), ROOT / "runs/eda/summary.json",
+                                           ROOT / "notebooks/eda_summary.json"] if path.exists())
         eda = json.loads(source.read_text(encoding="utf-8"))
         assert eda["complete"]
         splits = eda["splits"]
@@ -286,7 +287,7 @@ def build(summary_path: Path, output_path: Path):
           не определяется.
         """),
     ]
-    namespace = {"__name__": "__main__"}
+    namespace = {"__name__": "__main__", "_eda_summary_path": snapshot.resolve()}
     figures = summary_path.parent / "figures"
     figures.mkdir(parents=True, exist_ok=True)
     original_show = plt.show

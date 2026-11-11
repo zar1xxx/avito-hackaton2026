@@ -89,10 +89,15 @@ def _feed_features(row: dict, emb: np.memmap) -> dict[str, np.ndarray]:
         sim = cu @ hu.T  # (M, H_ok)
         out["cos_hist_mean"] = (cu @ hu.mean(0)) * has_emb
         out["cos_hist_max"] = sim.max(1) * has_emb
-        rec = hu[:HIST_RECENT]
-        s_rec = cu @ rec.T
-        out["cos_hist_recent_max"] = s_rec.max(1) * has_emb
-        out["cos_hist_recent_mean"] = s_rec.mean(1) * has_emb
+        recent_ok = h_ok.copy()
+        recent_ok[HIST_RECENT:] = False
+        if recent_ok.any():
+            s_rec = cu @ _unit(he[recent_ok]).T
+            out["cos_hist_recent_max"] = s_rec.max(1) * has_emb
+            out["cos_hist_recent_mean"] = s_rec.mean(1) * has_emb
+        else:
+            out["cos_hist_recent_max"] = np.zeros(m, dtype=np.float32)
+            out["cos_hist_recent_mean"] = np.zeros(m, dtype=np.float32)
     else:
         for k in ("cos_hist_mean", "cos_hist_max", "cos_hist_recent_max", "cos_hist_recent_mean"):
             out[k] = np.zeros(m, dtype=np.float32)
