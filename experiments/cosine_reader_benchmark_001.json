@@ -1,0 +1,22 @@
+{
+  "complete": true,
+  "source": "part-00000-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+  "feeds": 6132,
+  "candidates": 476301,
+  "mapped_seconds": 164.0470000000205,
+  "sequential_seconds": 20.75,
+  "observed_speed_ratio": 7.905879518073276,
+  "retained_vector_rows": 624176,
+  "retained_vector_bytes": 79894528,
+  "float32_bits_match_mapped_and_cache": true,
+  "memory": {
+    "total_physical_bytes": 16890322944,
+    "available_physical_bytes": 4877438976,
+    "working_set_bytes": 298446848,
+    "peak_working_set_bytes": 401313792
+  },
+  "scope": "one shard, mapped then sequential, warm filesystem-cache effects may influence timings",
+  "implementation_sha256": "2821ef1e8c11e3945c2551830910b53c392fb0c1bb42f2415d54cb4d1705418f",
+  "provenance_note": "Measured before the final cache-compatibility guard change; reader and numerical functions unchanged.",
+  "value_signature": "2677b517a4025814566c7f53d30f525692f2582aed7149bebaee0c505f0818b7"
+}

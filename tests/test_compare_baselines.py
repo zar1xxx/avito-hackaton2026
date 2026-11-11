@@ -45,3 +45,19 @@ class ComparisonTests(unittest.TestCase):
         pl.read_parquet(path).with_columns(pl.lit('private').alias('leaderboard_split')).write_parquet(path)
         with self.assertRaisesRegex(ValueError, 'assignments'):
             compare(self.a, self.b, self.output)
+
+    def test_explicit_training_growth_preserves_comparison_controls(self):
+        for path,parts,rows,feeds in ((self.a,['one'],10,2),(self.b,['one','two'],20,4)):
+            report=json.loads((path/'run.json').read_text())
+            report.update(features=['f1'],train_parts=parts,counts={'train_rows':rows,'train_feeds':feeds})
+            (path/'run.json').write_text(json.dumps(report))
+        with self.assertRaisesRegex(ValueError,'train_parts'):
+            compare(self.a,self.b,self.output)
+        result=compare(self.a,self.b,self.output,allow_train_growth=True,replicates=100)
+        self.assertFalse(result['matched_setup'])
+        self.assertTrue(result['matched_validation'])
+        self.assertEqual(result['comparison_type'],'train_growth')
+        path=self.b/'run.json'; report=json.loads(path.read_text()); report['features']=['f1','extra']
+        path.write_text(json.dumps(report))
+        with self.assertRaisesRegex(ValueError,'identical features'):
+            compare(self.a,self.b,self.output,allow_train_growth=True)

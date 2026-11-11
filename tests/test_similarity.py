@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 import polars as pl
@@ -11,7 +12,8 @@ from src.common.data import _feed_features
 from src.common.embedding_catalogue import build_catalogue
 from src.common.preparation import prepare_dataset, scan_candidates
 from src.common.similarity import (attach_features, build_features, build_feature_part,
-                                  feature_names, padded_features)
+                                  feature_names, padded_features, required_vector_rows, prefetch_vectors,
+                                  LEGACY_IMPLEMENTATIONS)
 
 
 class SimilarityTests(unittest.TestCase):
@@ -64,7 +66,7 @@ class SimilarityTests(unittest.TestCase):
             manifest = build_features(raw, prepared, catalogue, features, batch_size=3)
             self.assertTrue(manifest['complete'])
             before = {path: path.stat().st_mtime_ns for path in features.glob('*/*.parquet')}
-            build_features(raw, prepared, catalogue, features, resume=True)
+            build_features(raw, prepared, catalogue, features, resume=True,batch_size=3)
             self.assertEqual(before, {path: path.stat().st_mtime_ns for path in before})
             for split in ('train', 'val', 'test'):
                 candidates = scan_candidates(prepared, split).collect().reverse()
@@ -90,6 +92,80 @@ class SimilarityTests(unittest.TestCase):
                 del vector
                 with self.assertRaises(ValueError):
                     attach_features(candidates.head(1), features, split, ['part-00000.parquet'])
+
+    def test_sequential_prefetch_is_bitwise_identical_to_mapped_vectors(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            raw=Path(temporary)
+            make_split(raw,'train',12,np.random.default_rng(88),0,True,True)
+            frame=pl.read_parquet(raw/'train/impressions/part-00000.parquet')
+            rows=frame.to_dicts()
+            rows[0]['item_id__embedding_idx']=[-1]*len(rows[0]['item_id'])
+            rows[1]['history__item_id__embedding_idx']=[-1]*len(rows[1]['history__item_id__embedding_idx'])
+            frame=pl.DataFrame(rows,schema=frame.schema)
+            vector=np.memmap(raw/'train/item_embeddings/data.memmap',dtype=np.int8,mode='r',shape=(2000,128))
+            old=build_feature_part(frame,'train',vector,batch_size=3)
+            required=required_vector_rows(frame)
+            compact=prefetch_vectors(raw,'train',required,block_rows=17)
+            new=build_feature_part(frame,'train',compact,batch_size=3,vector_rows=required)
+            self.assertTrue(old.select('feed_id','candidate_index','item_id').equals(new.select('feed_id','candidate_index','item_id')))
+            for name in feature_names():
+                np.testing.assert_array_equal(old[name].to_numpy().view(np.uint32),new[name].to_numpy().view(np.uint32))
+            del vector
+
+    def test_cache_expansion_is_not_lost_after_a_smaller_resume(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            raw,prepared,catalogue,features=(root/name for name in ('raw','prepared','catalogue','features'))
+            rng=np.random.default_rng(33)
+            for i,split in enumerate(('train','val','test')):
+                make_split(raw,split,8,rng,i*100,split=='train',split!='test')
+            path=raw/'train/impressions/part-00000.parquet'
+            frame=pl.read_parquet(path)
+            frame.head(4).write_parquet(path)
+            frame.tail(4).write_parquet(path.with_name('part-00001.parquet'))
+            test=pl.read_parquet(raw/'test/impressions/part-00000.parquet')
+            test.select('feed_id','item_id').explode('item_id').cast({'feed_id':pl.Int32,'item_id':pl.Int32})\
+                .with_columns(pl.lit(0.,dtype=pl.Float32).alias('score')).write_parquet(raw/'sample_submission.parquet')
+            prepare_dataset(raw,prepared,root/'eda')
+            build_catalogue(raw,catalogue)
+            first=build_features(raw,prepared,catalogue,features,train_parts=1,reader='sequential')
+            self.assertEqual(first['splits']['train']['covered_parts'],1)
+            first_file=features/'train/part-00000.parquet'
+            first_time=first_file.stat().st_mtime_ns
+            expanded=build_features(raw,prepared,catalogue,features,train_parts=2,resume=True,reader='sequential')
+            self.assertEqual(expanded['splits']['train']['covered_parts'],2)
+            all_times={p:p.stat().st_mtime_ns for p in features.glob('*/*.parquet')}
+            smaller=build_features(raw,prepared,catalogue,features,train_parts=1,resume=True)
+            self.assertEqual(smaller['splits']['train']['covered_parts'],2)
+            self.assertTrue(smaller['all_train_parts'])
+            self.assertEqual(first_time,first_file.stat().st_mtime_ns)
+            self.assertEqual(all_times,{p:p.stat().st_mtime_ns for p in all_times})
+
+    def test_legacy_cache_is_reused_only_for_its_verified_math(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            raw,prepared,catalogue,features=(root/name for name in ('raw','prepared','catalogue','features'))
+            rng=np.random.default_rng(72)
+            for i,split in enumerate(('train','val','test')):
+                make_split(raw,split,4,rng,i*100,split=='train',split!='test')
+            test=pl.read_parquet(raw/'test/impressions/part-00000.parquet')
+            test.select('feed_id','item_id').explode('item_id').cast({'feed_id':pl.Int32,'item_id':pl.Int32})\
+                .with_columns(pl.lit(0.,dtype=pl.Float32).alias('score')).write_parquet(raw/'sample_submission.parquet')
+            prepare_dataset(raw,prepared,root/'eda')
+            build_catalogue(raw,catalogue)
+            legacy=build_features(raw,prepared,catalogue,features)
+            legacy.pop('value_signature')
+            legacy['implementation_sha256']=next(iter(LEGACY_IMPLEMENTATIONS))
+            manifest_path=features/'manifest.json'
+            manifest_path.write_text(json.dumps(legacy),encoding='utf-8')
+            with patch('src.common.similarity.build_feature_part',wraps=build_feature_part) as builder:
+                build_features(raw,prepared,catalogue,features,resume=True)
+                self.assertEqual(builder.call_count,0)
+            manifest_path.write_text(json.dumps(legacy),encoding='utf-8')
+            with patch('src.common.similarity.value_signature',return_value='changed-math'), \
+                 patch('src.common.similarity.build_feature_part',wraps=build_feature_part) as builder:
+                build_features(raw,prepared,catalogue,features,resume=True)
+                self.assertEqual(builder.call_count,3)
 
 
 if __name__ == '__main__':

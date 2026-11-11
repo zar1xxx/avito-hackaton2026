@@ -23,6 +23,7 @@ from catboost import CatBoostRanker, Pool
 from scripts.validate_submission import validate
 from src.common.metric import all_variants
 from src.common.preparation import scan_candidates, write_json, write_parquet_atomic
+from src.common.resources import memory_snapshot
 
 
 FEATURES = ['f1', 'f2', 'f3', 'f4', 'f5', 'category_id']
@@ -84,9 +85,10 @@ def run(root: Path, raw: Path, output: Path, *, train_parts=1, iterations=100,
     spec.loader.exec_module(reference)
     selected = [parts[int(index)] for index in np.linspace(0, len(parts) - 1, train_parts, dtype=int)]
     started = time.monotonic()
+    resources={'start':memory_snapshot()}
     code_root = Path(__file__).resolve().parents[1]
     tracked_code = ['scripts/run_baseline_check.py', 'scripts/validate_submission.py',
-                    'src/common/preparation.py', 'src/common/metric.py']
+                    'src/common/preparation.py', 'src/common/metric.py', 'src/common/resources.py']
     model_features = list(FEATURES)
     feature_metadata = []
     feature_roots = [] if feature_root is None else ([feature_root] if isinstance(feature_root, (str, Path)) else list(feature_root))
@@ -110,11 +112,11 @@ def run(root: Path, raw: Path, output: Path, *, train_parts=1, iterations=100,
                                  'vector_policy': feature_manifest.get('vector_policy'),
                                  'covered_parts': {name: value['covered_parts'] for name,value in feature_manifest['splits'].items()}})
     report = {
-        'complete': False, 'purpose': 'infrastructure baseline, small training subset',
+        'complete': False, 'stage':'loading_data', 'purpose': 'infrastructure baseline, small training subset',
         'git': git_snapshot(), 'code_sha256': {name: hashlib.sha256((code_root / name).read_bytes()).hexdigest() for name in dict.fromkeys(tracked_code)},
         'prepared_manifest_sha256': hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
         'reference_sha256': hashlib.sha256(reference_path.read_bytes()).hexdigest(),
-        'features': model_features,
+        'features': model_features, 'resources':resources,
         'similarity': next((group for group in feature_metadata if group['group'] == 'cosine'), None),
         'feature_groups': feature_metadata, 'train_parts': [part['source'] for part in selected],
         'selection': 'best NDCG@30 on pseudo-Public; pseudo-Private never passed to fit',
@@ -147,11 +149,17 @@ def run(root: Path, raw: Path, output: Path, *, train_parts=1, iterations=100,
                           random_seed=seed, thread_count=threads, allow_writing_files=False,
                           used_ram_limit='1024mb')
     train_pool, public_pool = pool(train, features=model_features), pool(public, features=model_features)
+    resources['pools_loaded']=memory_snapshot()
+    report['stage']='fit'
+    write_json(output/'run.json',report)
     model.fit(train_pool, eval_set=public_pool, use_best_model=True,
               early_stopping_rounds=25, verbose=25)
     model.save_model(str(output / 'model.cbm'))
     report['trees'] = model.tree_count_
     report['model_parameters'] = model.get_all_params()
+    resources['fit_complete']=memory_snapshot()
+    report['stage']='validation'
+    write_json(output/'run.json',report)
     del train_pool, public_pool, train, public
     gc.collect()
     scores = model.predict(pool(val, labeled=False, features=model_features), thread_count=threads).astype(np.float32)
@@ -196,7 +204,9 @@ def run(root: Path, raw: Path, output: Path, *, train_parts=1, iterations=100,
                             'sha256': hashlib.sha256(submission_path.read_bytes()).hexdigest(),
                             'uploaded_to_competition': False}
     report['duration_seconds'] = round(time.monotonic() - started, 2)
+    resources['finished']=memory_snapshot()
     report['complete'] = True
+    report['stage']='complete'
     write_json(output / 'run.json', report)
     print(f"Complete: {output}; submission validator passed", flush=True)
     return report

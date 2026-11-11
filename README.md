@@ -226,7 +226,36 @@ uv run --locked python -m scripts.build_embedding_catalogue --data competition -
 uv run --locked python -m scripts.build_similarity_features --train-parts 1 --resume
 ```
 
+При расширении cosine-кеша проверенные готовые шарды сохраняются: последующий
+запуск на одном шарде не исключает остальные из манифеста. Отпечаток численной
+формулы и параметров отделён от способа чтения; у каждого файла записана версия
+производителя. Поддерживается миграция ранее опубликованного стандартного кеша.
+
+Режим `--reader auto` читает большой train-memmap последовательно и удерживает
+в RAM только нужные векторы кандидатов и первых 50 событий. Для небольших
+val/test остаётся чтение через отображаемые окна. На одном реальном train-шарде
+проверено побитовое совпадение девяти Float32-признаков с прежним кешем.
+Скорость зависит от файлового кеша и носителя; замер сохраняется отдельно:
+
+```powershell
+uv run --locked python -m scripts.benchmark_similarity --out runs/cosine-reader-benchmark.json
+```
+
 ### Проверка моделей
+
+Увеличение обучающей выборки проверяется отдельно от изменения признаков:
+
+```powershell
+uv run --locked python -m scripts.build_similarity_features --train-parts 2 --resume
+uv run --locked python -m scripts.run_baseline_check --feature-root data/features/cosine --train-parts 2 --out runs/baseline-cosine-2parts-001
+uv run --locked python -m scripts.compare_baselines --baseline runs/baseline-cosine-001 --candidate runs/baseline-cosine-2parts-001 --allow-train-growth --out runs/baseline-cosine-2parts-001/comparison.json
+```
+
+Для такого сравнения обязательны те же признаки, параметры, val-строки и
+назначения Public/Private; train должен быть строгим расширением исходных
+шардов. Без `--allow-train-growth` несовпадающий train отклоняется. В `run.json`
+пишутся этап выполнения, доступная RAM и пиковый рабочий набор процесса —
+это измерение, а не жёсткий лимит памяти.
 
 Группа `data/features/infeed/` содержит 12 признаков только из текущей ленты:
 размер, долю категории кандидата и для f1–f5 — нормированный ранг и z-score.

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 from pathlib import Path
 import time
@@ -17,6 +18,11 @@ from src.common.preparation import fingerprint, flat_values, write_json, write_p
 
 RECENT = (10, 50)
 KEY = ['split', 'feed_id', 'candidate_index']
+# Published mapped-reader implementation whose cached values use the same math.
+LEGACY_IMPLEMENTATIONS = {
+    '4efada00a34d6f30538a46b1ee0a24e2db416f333348ff6c3d70a467ae7e7dae':
+        '2677b517a4025814566c7f53d30f525692f2582aed7149bebaee0c505f0818b7',
+}
 
 
 def feature_names(recent=RECENT):
@@ -34,6 +40,8 @@ def gather(vectors, indices):
     if (indices < -1).any() or (indices >= len(vectors)).any():
         raise ValueError('embedding index outside [-1, vector_rows)')
     valid = indices >= 0
+    if not len(vectors):
+        return np.zeros(indices.shape + (128,), dtype=np.float32)
     result = vectors[np.maximum(indices, 0)].astype(np.float32)
     result *= valid[..., None]
     return result
@@ -76,7 +84,62 @@ def padded_indices(values, offsets, start, end, width):
     return np.where(present, indices, -1).astype(np.int32), present
 
 
-def build_feature_part(frame, split, vectors, *, batch_size=16, recent=RECENT):
+def remap_indices(indices, vector_rows):
+    if (indices < -1).any():
+        raise ValueError('embedding index below -1')
+    result = np.full(indices.shape, -1, dtype=np.int32)
+    valid = indices >= 0
+    if valid.any():
+        positions = np.searchsorted(vector_rows, indices[valid])
+        if (positions >= len(vector_rows)).any() or not np.array_equal(vector_rows[positions], indices[valid]):
+            raise ValueError('prefetched vectors do not cover all requested indices')
+        result[valid] = positions
+    return result
+
+
+def required_vector_rows(frame, recent=RECENT):
+    candidates = flat_values(frame['item_id__embedding_idx'])
+    history = flat_values(frame['history__item_id__embedding_idx'])
+    lengths = frame['history__item_id__embedding_idx'].list.len().to_numpy()
+    offsets = np.r_[0, lengths.cumsum(dtype=np.int64)]
+    recent_indices, _ = padded_indices(history, offsets, 0, frame.height, max(recent))
+    values = np.concatenate([candidates[candidates >= 0], recent_indices[recent_indices >= 0]])
+    return np.unique(values)
+
+
+def prefetch_vectors(raw, split, rows, *, block_rows=65536):
+    """Read selected vectors in file order, retaining only the needed int8 rows."""
+    directory = Path(raw) / split / 'item_embeddings'
+    meta = json.loads((directory / 'data.meta').read_text(encoding='utf-8'))
+    if meta['order'] != 'C' or meta['dtype'] != 'int8' or meta['shape'][1] != 128:
+        raise ValueError('sequential prefetch requires C-order int8 vectors of dimension 128')
+    if block_rows < 1 or (len(rows) and (rows[0] < 0 or rows[-1] >= meta['shape'][0])):
+        raise ValueError('invalid prefetch range')
+    if len(rows) > 1 and not (np.diff(rows) > 0).all():
+        raise ValueError('prefetch rows must be sorted and unique')
+    output = np.empty((len(rows),128),dtype=np.int8)
+    buffer = np.empty((block_rows,128),dtype=np.int8)
+    with (directory / 'data.memmap').open('rb') as source:
+        for block in np.unique(rows // block_rows):
+            first = int(block) * block_rows
+            start,end = np.searchsorted(rows,[first,first+block_rows])
+            source.seek(first*128)
+            size = source.readinto(buffer)
+            if size < min(block_rows,meta['shape'][0]-first)*128:
+                raise ValueError('truncated vector file')
+            output[start:end] = buffer[rows[start:end]-first]
+    return output
+
+
+def value_signature(batch_size):
+    # Reader strategy and unrelated cache/CLI changes do not change numerical values.
+    functions = (feature_names, unit, gather, padded_features, padded_indices)
+    content = '\n'.join(inspect.getsource(function) for function in functions)
+    content += json.dumps({'assembly_version':1,'recent':RECENT,'batch_size':batch_size,'feed_window':128})
+    return hashlib.sha256(content.encode('utf-8')).hexdigest()
+
+
+def build_feature_part(frame, split, vectors, *, batch_size=16, recent=RECENT, vector_rows=None):
     if batch_size < 1 or not recent or any(n < 1 for n in recent):
         raise ValueError('batch_size and recent lengths must be positive')
     candidate_lengths = frame['item_id'].list.len().to_numpy()
@@ -84,6 +147,8 @@ def build_feature_part(frame, split, vectors, *, batch_size=16, recent=RECENT):
     candidate_offsets = np.r_[0, candidate_lengths.cumsum(dtype=np.int64)]
     history_offsets = np.r_[0, history_lengths.cumsum(dtype=np.int64)]
     candidate_values = flat_values(frame['item_id__embedding_idx'])
+    if vector_rows is not None:
+        candidate_values = remap_indices(candidate_values,vector_rows)
     history_values = flat_values(frame['history__item_id__embedding_idx'])
     user = flat_values(frame['user_embedding']).reshape(frame.height, 128)
     chunks = {name: [] for name in feature_names(recent)}
@@ -94,6 +159,8 @@ def build_feature_part(frame, split, vectors, *, batch_size=16, recent=RECENT):
             raise ValueError('empty candidate list')
         candidate, present = padded_indices(candidate_values, candidate_offsets, start, end, width)
         history, _ = padded_indices(history_values, history_offsets, start, end, max(recent))
+        if vector_rows is not None:
+            history = remap_indices(history,vector_rows)
         result = padded_features(candidate, history, user[start:end], history_lengths[start:end], vectors, recent)
         for name in chunks:
             chunks[name].append(result[name][present])
@@ -112,7 +179,7 @@ def build_feature_part(frame, split, vectors, *, batch_size=16, recent=RECENT):
     return result
 
 
-def build_features(raw, prepared, catalogue_root, output, *, train_parts=None, batch_size=16, resume=False):
+def build_features(raw, prepared, catalogue_root, output, *, train_parts=None, batch_size=16, resume=False, reader='auto'):
     raw, prepared, catalogue_root, output = (Path(path).resolve() for path in (raw, prepared, catalogue_root, output))
     if raw == output or raw in output.parents or output in raw.parents:
         raise ValueError('feature output must be separate from raw data')
@@ -129,18 +196,37 @@ def build_features(raw, prepared, catalogue_root, output, *, train_parts=None, b
         raise ValueError('catalogue references different raw data')
     catalogue_sha = catalogue_signature(store.manifest)
     implementation_sha = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    numerical_signature = value_signature(batch_size)
+    if reader not in ('auto','mapped','sequential'):
+        raise ValueError('reader must be auto, mapped or sequential')
+    compatible = (previous.get('format_version') == 1 and
+                  (previous.get('value_signature') == numerical_signature or
+                   LEGACY_IMPLEMENTATIONS.get(previous.get('implementation_sha256')) == numerical_signature))
     manifest = {'format_version': 1, 'complete': False, 'key': KEY, 'features': feature_names(),
                 'recent_events': list(RECENT), 'missing_policy': 'preserve original per-occurrence -1 indices',
                 'vector_policy': 'original split version, no cross-split filling',
-                'catalogue_sha256': catalogue_sha, 'implementation_sha256': implementation_sha, 'splits': {}}
+                'catalogue_sha256': catalogue_sha, 'implementation_sha256': implementation_sha,
+                'value_signature':numerical_signature,'reader':reader,'batch_size':batch_size,'splits': {}}
     write_json(output / 'manifest.json', manifest)
     started = time.monotonic()
     for split in ('train', 'val', 'test'):
-        entries = source['splits'][split]['parts']
+        all_entries = source['splits'][split]['parts']
+        entries = all_entries
         if split == 'train' and train_parts is not None:
             if not 1 <= train_parts <= len(entries):
                 raise ValueError('train_parts outside source range')
             entries = [entries[int(i)] for i in np.linspace(0, len(entries) - 1, train_parts, dtype=int)]
+        requested = {entry['source'] for entry in entries}
+        old_parts = previous.get('splits',{}).get(split,{}).get('parts',{})
+        def reusable(entry):
+            prior = old_parts.get(entry['source'],{})
+            path = output / split / entry['source']
+            return (resume and compatible and previous.get('catalogue_sha256') == catalogue_sha
+                    and prior.get('source') == fingerprint(raw / split / 'impressions' / entry['source'])
+                    and path.exists() and prior.get('fingerprint') == fingerprint(path)
+                    and pq.read_metadata(path).num_rows == entry['candidates'])
+        # Expanding a cache is monotonic: a later small run retains verified shards.
+        entries = [entry for entry in all_entries if entry['source'] in requested or reusable(entry)]
         saved = {}
         for number, entry in enumerate(entries):
             source_path = raw / split / 'impressions' / entry['source']
@@ -150,31 +236,44 @@ def build_features(raw, prepared, catalogue_root, output, *, train_parts=None, b
             relative = Path(split) / entry['source']
             path = output / relative
             prior = previous.get('splits', {}).get(split, {}).get('parts', {}).get(entry['source'], {})
-            reuse = (resume and previous.get('format_version') == 1
-                     and previous.get('implementation_sha256') == implementation_sha
-                     and previous.get('catalogue_sha256') == catalogue_sha and prior.get('source') == stamp
-                     and path.exists() and prior.get('fingerprint') == fingerprint(path)
-                     and pq.read_metadata(path).num_rows == entry['candidates'])
+            reuse = reusable(entry)
             if not reuse:
+                part_started = time.monotonic()
                 frame = pl.read_parquet(source_path, columns=['feed_id', 'item_id', 'item_id__embedding_idx',
                                                               'history__item_id__embedding_idx', 'user_embedding'])
                 # Reopen the file mapping between small feed blocks. This bounds
                 # resident mapped pages on Windows even for the 10 GB train file;
                 # copied feature columns do not retain views of the memmap.
-                chunks = []
-                for start in range(0, frame.height, 128):
-                    vector_window = load_embeddings(raw, split)
-                    try:
-                        chunks.append(build_feature_part(frame.slice(start, 128), split, vector_window, batch_size=batch_size))
-                    finally:
-                        vector_window._mmap.close()
-                features = pl.concat(chunks)
+                strategy = reader
+                if strategy == 'auto':
+                    strategy = 'sequential' if store.vectors[split].nbytes > 1_500_000_000 else 'mapped'
+                if strategy == 'sequential':
+                    rows = required_vector_rows(frame)
+                    vectors = prefetch_vectors(raw,split,rows)
+                    features = build_feature_part(frame,split,vectors,batch_size=batch_size,vector_rows=rows)
+                    prefetched_bytes = vectors.nbytes
+                    del vectors,rows
+                else:
+                    chunks = []
+                    for start in range(0, frame.height, 128):
+                        vector_window = load_embeddings(raw, split)
+                        try:
+                            chunks.append(build_feature_part(frame.slice(start, 128), split, vector_window, batch_size=batch_size))
+                        finally:
+                            vector_window._mmap.close()
+                    features = pl.concat(chunks)
+                    prefetched_bytes = None
                 if features.height != entry['candidates']:
                     raise ValueError('feature count does not match prepared candidates')
                 write_parquet_atomic(features, path)
                 del frame, features
+                production = {'producer_implementation_sha256':implementation_sha,'reader':strategy,
+                              'duration_seconds':round(time.monotonic()-part_started,3),'prefetched_bytes':prefetched_bytes}
+            else:
+                production = {key:prior[key] for key in ('reader','duration_seconds','prefetched_bytes') if key in prior}
+                production['producer_implementation_sha256'] = prior.get('producer_implementation_sha256',previous.get('implementation_sha256'))
             saved[entry['source']] = {'path': relative.as_posix(), 'rows': entry['candidates'],
-                                      'source': stamp, 'fingerprint': fingerprint(path)}
+                                      'source': stamp, 'fingerprint': fingerprint(path),**production}
             if number == 0 or (number + 1) % 16 == 0 or number + 1 == len(entries):
                 print(f"cosines {split}: {number + 1}/{len(entries)} shards; {time.monotonic() - started:.0f}s", flush=True)
                 manifest['splits'][split] = {'parts': saved, 'covered_parts': len(saved),

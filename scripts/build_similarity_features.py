@@ -13,6 +13,7 @@ if __name__ == '__main__':
     parser.add_argument('--train-parts', type=int, default=None)
     parser.add_argument('--batch-size', type=int, default=16)
     parser.add_argument('--resume', action='store_true')
+    parser.add_argument('--reader',choices=['auto','mapped','sequential'],default='auto')
     args = parser.parse_args()
     build_features(args.raw, args.prepared, args.catalogue, args.out,
-                   train_parts=args.train_parts, batch_size=args.batch_size, resume=args.resume)
+                   train_parts=args.train_parts, batch_size=args.batch_size, resume=args.resume,reader=args.reader)

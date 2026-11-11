@@ -10,14 +10,22 @@ from src.common.metric import ndcg_one
 from src.common.preparation import write_json
 
 
-def compare(baseline, candidate, output, *, replicates=1000, seed=42):
+def compare(baseline, candidate, output, *, replicates=1000, seed=42, allow_train_growth=False):
     baseline, candidate, output = Path(baseline), Path(candidate), Path(output)
     a, b = [json.loads((path / 'run.json').read_text(encoding='utf-8')) for path in (baseline, candidate)]
     if not a.get('complete') or not b.get('complete') or replicates < 10:
         raise ValueError('complete runs and at least ten bootstrap replicates are required')
-    for key in ('prepared_manifest_sha256', 'train_parts', 'parameters'):
+    for key in ('prepared_manifest_sha256', 'parameters'):
         if a[key] != b[key]:
             raise ValueError(f'unmatched experiment setup: {key}')
+    if allow_train_growth:
+        if (a['features']!=b['features'] or not set(a['train_parts']) < set(b['train_parts'])
+                or len(set(a['train_parts']))!=len(a['train_parts']) or len(set(b['train_parts']))!=len(b['train_parts'])):
+            raise ValueError('training growth requires identical features and a strict superset of train shards')
+        if any(b['counts'][key]<=a['counts'][key] for key in ('train_rows','train_feeds')):
+            raise ValueError('training rows and feeds must increase')
+    elif a['train_parts']!=b['train_parts']:
+        raise ValueError('unmatched experiment setup: train_parts')
     left, right = [pl.read_parquet(path / 'validation_predictions.parquet') for path in (baseline, candidate)]
     keys = ['feed_id', 'candidate_index', 'item_id']
     joined = left.join(right, on=keys, how='inner', suffix='_new', validate='1:1').sort('feed_id', 'candidate_index')
@@ -35,7 +43,10 @@ def compare(baseline, candidate, output, *, replicates=1000, seed=42):
         old = ndcg_one(target[start:end], old_score[start:end], cutoff=30)
         new = ndcg_one(target[start:end], new_score[start:end], cutoff=30)
         by_split[part[start]].append((old, new))
-    result = {'matched_setup': True, 'val_rows': joined.height, 'train_parts': a['train_parts'],
+    result = {'matched_setup': not allow_train_growth, 'matched_validation':True,
+              'comparison_type':'train_growth' if allow_train_growth else 'feature_groups',
+              'val_rows': joined.height, 'train_parts': a['train_parts'],
+              'candidate_train_parts':b['train_parts'],
               'baseline_commit': a.get('git', {}).get('commit'), 'candidate_commit': b.get('git', {}).get('commit'),
               'selection': 'both checkpoints selected on pseudo-Public; fixed pseudo-Private compared after fitting',
               'scores_dtype': 'float32', 'metrics': {}}
@@ -71,5 +82,7 @@ if __name__ == '__main__':
     parser.add_argument('--baseline', type=Path, default=Path('runs/baseline-check-001'))
     parser.add_argument('--candidate', type=Path, default=Path('runs/baseline-cosine-001'))
     parser.add_argument('--out', type=Path, default=Path('runs/baseline-cosine-001/comparison.json'))
+    parser.add_argument('--allow-train-growth',action='store_true',
+                        help='compare an expanded train subset while requiring identical feature names and model parameters')
     args = parser.parse_args()
-    compare(args.baseline, args.candidate, args.out)
+    compare(args.baseline, args.candidate, args.out,allow_train_growth=args.allow_train_growth)
