@@ -99,6 +99,12 @@ def build_feature_dataframe(raw_dict: dict[str, np.ndarray]) -> pl.DataFrame:
         "x_avgust_dot_uh": pl.Series(raw_dict["dot_uh"], dtype=pl.Float32),
     })
 
+    # Дедупликация по (feed_id, item_id) по контракту extra_features.py Дани
+    n_before = len(df)
+    df = df.unique(subset=["feed_id", "item_id"], keep="first", maintain_order=True)
+    if len(df) != n_before:
+        print(f"  [INFO] Удалено дублей (feed_id, item_id): {n_before - len(df)}")
+
     # Внутрилентовые статистики по x_avgust_nn_score
     df = df.with_columns([
         (

@@ -9,12 +9,12 @@
 
 Инструкция для Дани:
   # 1. Поиск оптимальных весов на val:
-  python -m src.ensemble.blend `
+  python -m src.ensemble.blend_nn_gbdt `
       --val-nn runs/nn/oof_val.parquet `
       --val-gbdt runs/gbdt/oof_val.parquet
 
   # 2. Поиск весов + генерация финального сабмита:
-  python -m src.ensemble.blend `
+  python -m src.ensemble.blend_nn_gbdt `
       --val-nn runs/nn/oof_val.parquet `
       --val-gbdt runs/gbdt/oof_val.parquet `
       --test-nn runs/nn/test_pred.parquet `

@@ -242,3 +242,33 @@ def test_set_attention_padding_isolation_and_flag(ranking_model):
     model_no_set.eval()
     _, scores_no_set = model_no_set(b_padded, use_pos_bias=False)
     assert not torch.isnan(scores_no_set[b_padded["candidate_mask"]]).any()
+
+
+def test_real_data_boundaries_and_clamp():
+    """7. Проверка реальных границ из EDA (M=300, pos=299, event_source=30) и защиты clamp."""
+    model = FeedRankingModel(
+        emb_dim=128, d_model=64, nhead=2, num_categories=1000,
+        num_cand_feats=NUM_CAND_FEATS, use_set_attention=True,
+    )
+    model.eval()
+
+    s = make_dummy_sample(feed_id=99, m=300, h=50)
+    # Эмулируем реальные границы и аномалии (выходящие за границы словаря)
+    s["hist_event_source"][0] = 30
+    s["hist_event_source"][1] = 999  # защита clamp
+    s["hist_event_type"][0] = 10
+    s["hist_event_type"][1] = 500    # защита clamp
+    s["cand_category_id"][0] = 53
+    s["cand_category_id"][1] = 5000  # защита clamp
+    s["pos"] = np.arange(300, dtype=np.int64)  # 0..299
+    s["pos"][-1] = 999  # защита clamp
+
+    batch = collate_ranking_batch([s])
+    with torch.no_grad():
+        total_scores, main_scores = model(batch, use_pos_bias=True)
+
+    assert not torch.isnan(total_scores).any()
+    assert not torch.isnan(main_scores).any()
+    assert total_scores.shape == (1, 300)
+    # Проверяем, что pos=299 и pos=150 различаются (не схлопнуты на 100!)
+    assert model.pos_bias_emb.num_embeddings == 512

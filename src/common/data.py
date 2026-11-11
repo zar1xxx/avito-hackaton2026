@@ -33,18 +33,13 @@ def list_parts(data_root: str | Path, split: str) -> list[Path]:
 
 
 def load_embeddings(data_root: str | Path, split: str) -> np.memmap:
-    # 1. Сначала проверяем путь внутри конкретного split
+    """Таблица эмбеддингов именно этого сплита. У каждого сплита своя таблица и свои индексы
+    (item_id общий, строки таблицы — разные), поэтому подставлять таблицу другого сплита нельзя."""
     d = Path(data_root) / split / "item_embeddings"
     if not (d / "data.meta").exists():
-        # 2. Проверяем общий путь на уровне корня data_root / item_embeddings
-        root_d = Path(data_root) / "item_embeddings"
-        if (root_d / "data.meta").exists():
-            d = root_d
-        elif (Path(data_root) / "train" / "item_embeddings" / "data.meta").exists():
-            # 3. Резерв: использование item_embeddings из train для val/test
-            d = Path(data_root) / "train" / "item_embeddings"
-        else:
-            raise FileNotFoundError(f"data.meta не найден ни в {d}, ни в {root_d}")
+        raise FileNotFoundError(
+            f"нет {d / 'data.meta'}: у каждого сплита должна быть своя таблица эмбеддингов "
+            "(подстановка таблицы train для val/test даёт неверные векторы)")
 
     meta = json.loads((d / "data.meta").read_text())
     return np.memmap(

@@ -20,7 +20,7 @@ src/common/data.py       чтение лент, признаки сходств�
 src/common/cv.py         временное деление val на pseudo-public (30%) и pseudo-private (70%)
 src/gbdt/train.py        CatBoost YetiRank: train / predict
 src/nn/                  нейросетевой пайплайн Августа (подробнее в docs/AVGUST_PIPELINE.md)
-src/ensemble/            ранговый блендинг (blend.py) и Ridge-стекинг (stacking.py)
+src/ensemble/            ранговый блендинг NN+GBDT (blend_nn_gbdt.py) и Ridge-стекинг (stacking.py)
 eval/make_synthetic.py   крошечный синтетический датасет для проверки кода (не данные Авито)
 scripts/validate_submission.py   проверка формата сабмита
 experiments/log.md       таблица экспериментов
@@ -103,7 +103,7 @@ python -u src/nn/predict.py --data /path/to/competition --split test --model mod
 ### 6. Блендинг и стекинг с GBDT (Даня + Август)
 ```bash
 # Ранговый блендинг (подбор весов по сетке на val + сабмит на test):
-python -u src/ensemble/blend.py \
+python -u src/ensemble/blend_nn_gbdt.py \
     --val-nn runs/nn-01/oof_val.parquet \
     --val-gbdt runs/gbdt-01/oof_val.parquet \
     --test-nn runs/nn-01/submission.parquet \

@@ -18,7 +18,7 @@ src/nn/
   └── profile_speed.py         # Профайлер пропускной способности (лент/сек) и пиковой VRAM GPU
 
 src/ensemble/
-  ├── blend.py                 # Ранговый блендинг (подбор весов NN + GBDT по сетке)
+  ├── blend_nn_gbdt.py         # Ранговый блендинг (подбор весов NN + GBDT по сетке)
   └── stacking.py              # Ridge-стекинг на [nn_score, gbdt_score, f1..f5] с GroupKFold по feed_id
 
 scripts/
@@ -97,7 +97,7 @@ tests/
 ### Валидация в стиле Дани (`--cv-mode danya`, по умолчанию)
 Для полной сопоставимости с GBDT Дани используется [`src/common/cv.py`](file:///d:/avito_hackathon/avito-hackaton2026/src/common/cv.py):
 - Сплит `val` делится по `timestamp` на ранние 30% (**`pseudo-public`**) и оставшиеся 70% (**`pseudo-private`**), имитируя публичный и приватный лидерборды соревнования.
-- Чекпоинт `best_model.pt`, `EarlyStopping` и `ReduceLROnPlateau` ориентируются строго на **`val_ndcg_private`**.
+- Чекпоинт `best_model.pt`, `EarlyStopping` и `ReduceLROnPlateau` ориентируются на **`val_ndcg_public`**, а **`val_ndcg_private`** только пишется в `history.csv` и выводится в отчет для честного сравнения с GBDT без утечек.
 - После каждой эпохи все метрики пишутся в `history.csv`:
   `epoch, train_loss, val_ndcg_full, val_ndcg_public, val_ndcg_private, val_ndcg_idcg30, val_ndcg_at30, lr, epoch_time_sec, best_ndcg`.
 
@@ -133,5 +133,5 @@ PYTHONPATH=. python -m src.gbdt.run_exp --data /path/to/data --features-dir feat
 ### Вариант Б: Ансамблирование и отбор финала
 1. **Формат `select_final.py` / `blend.py` Дани:** флаг `--save-as-danya` в `src/nn/predict.py` сохраняет файлы с точными именами `val_pred.parquet` и `test_pred.parquet`.
    *(Важно: для `val_pred.parquet` всегда используется базовая модель **до** `finetune.py` на `val`, а для `test_pred.parquet` — дообученная модель! Оркестратор `run_full_pipeline.py` соблюдает это автоматически.)*
-2. **Ранговый блендинг (`src/ensemble/blend.py`):** переводит скоры обеих моделей внутри каждой ленты в ранги $[0, 1]$ и подбирает оптимальные веса `w_nn` / `w_gbdt` на `val`.
+2. **Ранговый блендинг (`src/ensemble/blend_nn_gbdt.py`):** переводит скоры обеих моделей внутри каждой ленты в ранги $[0, 1]$ и подбирает оптимальные веса `w_nn` / `w_gbdt` на `val`.
 3. **Ridge-стекинг (`src/ensemble/stacking.py`):** обучает `StandardScaler + Ridge` на `[nn_score, gbdt_score, f1..f5]` через `GroupKFold` по `feed_id` и генерирует итоговый сабмит.

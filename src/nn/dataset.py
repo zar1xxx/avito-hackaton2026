@@ -49,23 +49,17 @@ def find_parquet_parts(data_root: str | Path, split: str) -> list[Path]:
 
 
 def load_item_embeddings_memmap(data_root: str | Path, split: str) -> np.memmap:
-    """Открывает бинарный файл эмбеддингов в режиме memmap r."""
-    root = Path(data_root)
-    candidates = [
-        root / split / "item_embeddings",
-        root / "item_embeddings",
-        root / "train" / "item_embeddings",
-    ]
-    meta_path = None
-    for d in candidates:
-        if (d / "data.meta").exists():
-            meta_path = d / "data.meta"
-            emb_dir = d
-            break
+    """Открывает таблицу эмбеддингов именно этого сплита в режиме memmap r.
 
-    if meta_path is None:
+    У каждого сплита (train, val, test) своя таблица эмбеддингов и свои индексы строк,
+    поэтому подставлять таблицу другого сплита категорически нельзя.
+    """
+    emb_dir = Path(data_root) / split / "item_embeddings"
+    meta_path = emb_dir / "data.meta"
+    if not meta_path.exists():
         raise FileNotFoundError(
-            f"Не найден data.meta для эмбеддингов ни по одному из путей: {[str(c) for c in candidates]}"
+            f"Не найден {meta_path}: у каждого сплита должна быть своя таблица эмбеддингов "
+            "(подстановка таблицы train для val/test дает неверные векторы)."
         )
 
     meta = json.loads(meta_path.read_text())

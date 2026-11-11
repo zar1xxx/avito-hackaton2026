@@ -34,8 +34,8 @@ class HistoryTransformerEncoder(nn.Module):
         dropout: float = 0.1,
         max_hist_len: int = 256,
         num_categories: int = 1000,
-        num_event_types: int = 16,
-        num_event_sources: int = 16,
+        num_event_types: int = 32,
+        num_event_sources: int = 64,
     ) -> None:
         super().__init__()
         self.d_model = d_model
@@ -91,9 +91,9 @@ class HistoryTransformerEncoder(nn.Module):
         pos_idx = torch.arange(h, device=hist_emb.device).unsqueeze(0).expand(b, h)
         pos_idx = torch.clamp(pos_idx, 0, self.pos_emb.num_embeddings - 1)
 
-        c_emb = self.cat_emb(torch.clamp(hist_cat, min=0))
-        et_emb = self.ev_type_emb(torch.clamp(hist_ev_type, min=0))
-        es_emb = self.ev_source_emb(torch.clamp(hist_ev_source, min=0))
+        c_emb = self.cat_emb(torch.clamp(hist_cat, 0, self.cat_emb.num_embeddings - 1))
+        et_emb = self.ev_type_emb(torch.clamp(hist_ev_type, 0, self.ev_type_emb.num_embeddings - 1))
+        es_emb = self.ev_source_emb(torch.clamp(hist_ev_source, 0, self.ev_source_emb.num_embeddings - 1))
         p_emb = self.pos_emb(pos_idx)
 
         x = torch.cat([hist_emb, c_emb, et_emb, es_emb, p_emb], dim=-1)
@@ -150,7 +150,7 @@ class CandidateEncoder(nn.Module):
         Returns:
             [B, M, d_model]
         """
-        cat_e = self.cat_emb(torch.clamp(cand_cat, min=0))
+        cat_e = self.cat_emb(torch.clamp(cand_cat, 0, self.cat_emb.num_embeddings - 1))
         x = torch.cat([cand_emb, cat_e, cand_feats], dim=-1)
         return self.mlp(x)
 
@@ -166,7 +166,7 @@ class FeedRankingModel(nn.Module):
         num_categories: int = 1000,
         num_cand_feats: int = 15,
         max_hist_len: int = 256,
-        max_position: int = 100,
+        max_position: int = 512,
         dropout: float = 0.15,
         use_set_attention: bool = True,
     ) -> None:
