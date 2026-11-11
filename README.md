@@ -17,14 +17,17 @@
 ```
 src/common/metric.py     NDCG по правилам соревнования (3 варианта, сверить с calculate_metrics.py)
 src/common/data.py       чтение лент, признаки сходства/истории, ранги внутри ленты
+src/common/cv.py         временное деление val на pseudo-public (30%) и pseudo-private (70%)
 src/gbdt/train.py        CatBoost YetiRank: train / predict
+src/nn/                  нейросетевой пайплайн Августа (подробнее в docs/AVGUST_PIPELINE.md)
+src/ensemble/            ранговый блендинг (blend.py) и Ridge-стекинг (stacking.py)
 eval/make_synthetic.py   крошечный синтетический датасет для проверки кода (не данные Авито)
 scripts/validate_submission.py   проверка формата сабмита
 experiments/log.md       таблица экспериментов
 models/nn/, features/    зона Августа и Антона
 ```
 
-## Запуск
+## Запуск GBDT
 ```bash
 pip install polars catboost lightgbm pyarrow numpy pandas
 export PYTHONPATH=.
@@ -40,25 +43,80 @@ GPU: `--task-type GPU`. Для быстрых экспериментов: `--max
 - Предсказание модели: parquet `feed_id:int32, item_id:int32, score:float32`.
 - Для ансамбля также нужны OOF-предсказания на val в том же формате (с колонкой `target`).
 
-## Нейросеть (Август)
+---
+
+## Быстрый старт для нейросети (Август)
+
+Подробная техническая документация архитектуры и контрактов: [docs/AVGUST_PIPELINE.md](docs/AVGUST_PIPELINE.md).
+
+**Рекомендации по железу:**
+- **CPU (Windows / локальная разработка):** добавляйте `--num-workers 0 --batch-size 32`.
+- **GPU (Linux / облако):** добавляйте `--amp --num-workers 4 --batch-size 128` (включает смешанную точность fp16 и параллельную загрузку).
+
+### 1. Проверка формата реальных данных (5 секунд)
 ```bash
-# Обучение модели
-python -u src/nn/train.py --data /path/to/competition --epochs 10 --batch-size 64 --out runs/nn-01
-
-# Предсказание на test (сабмит)
-python -u src/nn/predict.py --data /path/to/competition --split test --model runs/nn-01/best_model.pt --out runs/nn-01/submission.parquet
-
-# OOF-предсказания на val (для блендинга)
-python -u src/nn/predict.py --data /path/to/competition --split val --model runs/nn-01/best_model.pt --out runs/nn-01/oof_val.parquet
+python -u scripts/quick_check_real_data.py --data /path/to/competition
 ```
 
-## Ранговый блендинг GBDT + NN (Даня и Август)
+### 2. Полный пайплайн одной командой (проверка + smoke + train + finetune + OOF + сабмит)
 ```bash
-# Подбор весов на val и генерация итогового сабмита:
+# Вариант для GPU:
+python -u scripts/run_full_pipeline.py \
+    --data /path/to/competition \
+    --amp --scheduler cosine --warmup-epochs 1 \
+    --epochs 10 --finetune-epochs 3 --batch-size 128 --num-workers 4 \
+    --out models/nn/pipeline_run
+
+# Вариант для CPU:
+python -u scripts/run_full_pipeline.py \
+    --data /path/to/competition \
+    --epochs 10 --finetune-epochs 3 --batch-size 32 --num-workers 0 \
+    --out models/nn/pipeline_run
+```
+
+### 3. Экспорт нейро-фичей для GBDT Дани (`features/avgust/`)
+Обучает модель K-Fold (честный OOF на `train` без утечки таргета) и сохраняет `train.parquet`, `val.parquet`, `test.parquet` с колонками `x_avgust_*`:
+```bash
+python -u src/nn/export_gbdt_features.py \
+    --data /path/to/competition \
+    --folds 4 --epochs 8 --batch-size 64 \
+    --out features
+```
+
+### 4. Взвешенный сид-ансамбль нейросетей (`seed_ensemble.py`)
+Обучает 3 модели (сиды 42, 43, 44), подбирает оптимальные веса по `val` и генерирует сабмит:
+```bash
+python -u src/nn/seed_ensemble.py \
+    --data /path/to/competition \
+    --seeds 42 43 44 --epochs 10 --batch-size 64 \
+    --mixup-alpha 0.2 --temperature 1.5 --agg rank --predict-test \
+    --out models/nn/ensemble_v1
+```
+
+### 5. Инференс в формате Дани (`val_pred.parquet` / `test_pred.parquet`)
+Для подключения в `select_final.py` и `blend.py` Дани используйте флаг `--save-as-danya`:
+```bash
+python -u src/nn/predict.py --data /path/to/competition --split val --model models/nn/exp/best_model.pt --save-as-danya --out runs/nn-01
+python -u src/nn/predict.py --data /path/to/competition --split test --model models/nn/exp/best_model.pt --save-as-danya --out runs/nn-01
+```
+
+### 6. Блендинг и стекинг с GBDT (Даня + Август)
+```bash
+# Ранговый блендинг (подбор весов по сетке на val + сабмит на test):
 python -u src/ensemble/blend.py \
     --val-nn runs/nn-01/oof_val.parquet \
     --val-gbdt runs/gbdt-01/oof_val.parquet \
     --test-nn runs/nn-01/submission.parquet \
     --test-gbdt runs/gbdt-01/submission.parquet \
     --out runs/ensemble/submission_blend.parquet
+
+# Ridge-стекинг на [nn_score, gbdt_score, f1..f5] с GroupKFold по feed_id:
+python -u src/ensemble/stacking.py \
+    --data /path/to/competition \
+    --val-nn runs/nn-01/oof_val.parquet \
+    --val-gbdt runs/gbdt-01/oof_val.parquet \
+    --test-nn runs/nn-01/submission.parquet \
+    --test-gbdt runs/gbdt-01/submission.parquet \
+    --alpha 10.0 \
+    --out runs/ensemble/submission_stack.parquet
 ```
