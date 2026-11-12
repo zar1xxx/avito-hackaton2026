@@ -8,8 +8,9 @@ import numpy as np
 import polars as pl
 
 from src.common.itemstats import build_features,feature_names
-from src.common.preparation import write_json
+from src.common.preparation import write_json,fingerprint
 from src.common.similarity import attach_features
+from scripts.audit_itemstats_features import audit
 
 
 class ItemstatsTests(unittest.TestCase):
@@ -76,6 +77,16 @@ class ItemstatsTests(unittest.TestCase):
         self.assertEqual(unknown['is_item_ctr'],.5)
         self.assertEqual(unknown['is_item_position_ratio'],1)
         self.assertEqual(unknown['is_item_history_evt10'],1)
+        self.assertTrue(audit(self.prepared,self.root/'features',self.root/'audit.json')['complete'])
+        path=self.root/'features/train/part-00000.parquet'
+        frame.with_columns((pl.col('is_item_ctr')+.01).alias('is_item_ctr')).write_parquet(path)
+        manifest['splits']['train']['parts'][path.name]['fingerprint']=fingerprint(path)
+        write_json(self.root/'features/manifest.json',manifest)
+        with self.assertRaisesRegex(ValueError,'independent itemstats formula mismatch'):
+            audit(self.prepared,self.root/'features',self.root/'invalid-audit.json')
+        frame.write_parquet(path)
+        manifest['splits']['train']['parts'][path.name]['fingerprint']=fingerprint(path)
+        write_json(self.root/'features/manifest.json',manifest)
         with self.assertRaisesRegex(ValueError,'overlap'):
             attach_features(frame,self.root/'features','train',['part-00001.parquet'])
         baseline={p.relative_to(self.root/'features'):pl.read_parquet(p) for p in (self.root/'features').glob('*/*.parquet')}
