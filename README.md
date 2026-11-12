@@ -511,4 +511,19 @@ uv run --locked python -m src.gbdt.run_exp --data competition --prepared data/pr
     --feature-root data/features/cosine --feature-root data/features/infeed --feature-root data/features/history `
     --out runs/cb8-hist --kind catboost --log
 ```
-`--train-parts` у всех кешей (cosine, infeed, history) и у раннера должен совпадать.
+Каждый кеш должен покрывать конкретные шарды, выбранные раннером через
+`--train-parts`. Полный кеш подходит для любой меньшей выборки. Наборы из 8 и 32
+шардов выбираются через `linspace` и могут пересекаться частично. Расширение
+history сохраняет все проверенные файлы. Кеш проверяет отпечатки таблиц
+кандидатов и историй, прогресс сохраняется после каждого шарда.
+
+Аудит проверяет ключи, схемы, конечность чисел и отпечатки всех покрытых файлов.
+Все 49 формул независимо пересчитываются на трёх лентах каждого шарда и
+дополнительно на лентах с повторными item_id. Таблица событий использует
+условие `h_item_evtN > 0`, сохраняет число кандидатов, позитивов и лент,
+проверяет весь val и выбранные шарды train. Группы событий могут пересекаться.
+
+```powershell
+uv run --locked python -m scripts.audit_history_features --out runs/history_cache_audit.json
+uv run --locked python -m scripts.analyse_history_events --train-parts 8 --out experiments/history_event_target_008
+```

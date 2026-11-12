@@ -1,0 +1,39 @@
+{
+  "complete": true,
+  "scope": "all cached rows: keys, schema, finite values, domains and file fingerprints; independent Float64 formulas on sampled feeds in every shard",
+  "sample_feeds_per_shard": 3,
+  "formula_atol": 2e-06,
+  "formula_rtol": 2e-06,
+  "manifest_sha256": "884fd290a6e29a004f9df68c2903fea3ffa9e8be788c71108ee51b1265dcaa69",
+  "value_signature": "2677b517a4025814566c7f53d30f525692f2582aed7149bebaee0c505f0818b7",
+  "splits": {
+    "train": {
+      "parts": 512,
+      "rows": 246745836
+    },
+    "val": {
+      "parts": 64,
+      "rows": 1389971
+    },
+    "test": {
+      "parts": 64,
+      "rows": 2904806
+    }
+  },
+  "sampled_feeds": 1921,
+  "sampled_candidate_rows": 153230,
+  "sampled_repeated_item_feeds": 1,
+  "bytes": 5300030552,
+  "duration_seconds": 429.08,
+  "memory": {
+    "total_physical_bytes": 16890322944,
+    "available_physical_bytes": 3294580736,
+    "working_set_bytes": 100700160,
+    "peak_working_set_bytes": 354533376
+  },
+  "audit_sha256": "76a6aa718cf2d6ea440d82dce3355c549e8225ac8c841210ce8b9b9586b0a3a1",
+  "audit_git": {
+    "commit": "b28e4fdf283e23a8a5d64c7c730cccfd2a207fc2",
+    "dirty": false
+  }
+}

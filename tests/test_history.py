@@ -1,12 +1,86 @@
 import unittest
+import json
+from pathlib import Path
+import tempfile
+from unittest.mock import patch
 
 import numpy as np
 import polars as pl
 
-from src.common.history import _feed_block, build_feature_part, feature_names
+from src.common.history import _feed_block, build_feature_part, feature_names, build_features
+from src.common.preparation import prepare_dataset,write_json,fingerprint
+from eval.make_synthetic import make_split
+from scripts.audit_history_features import audit
+from scripts.analyse_history_events import analyse
 
 
 class HistoryTests(unittest.TestCase):
+    def test_resume_feed_invalidation_and_independent_audit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            raw,prepared,features=(root/name for name in ('raw','prepared','features'))
+            rng=np.random.default_rng(31)
+            for index,split in enumerate(('train','val','test')):
+                make_split(raw,split,9,rng,index*100,split=='train',split!='test')
+            path=raw/'train/impressions/part-00000.parquet'
+            train=pl.read_parquet(path)
+            for index in range(3):
+                train.slice(index*3,3).write_parquet(path.with_name(f'part-{index:05d}.parquet'))
+            test=pl.read_parquet(raw/'test/impressions/part-00000.parquet')
+            test.select('feed_id','item_id').explode('item_id').cast({'feed_id':pl.Int32,'item_id':pl.Int32})\
+                .with_columns(pl.lit(0.,dtype=pl.Float32).alias('score')).write_parquet(raw/'sample_submission.parquet')
+            source=prepare_dataset(raw,prepared,root/'eda')
+            build_features(prepared,features,train_parts=1)
+            def interrupt(path,value):
+                write_json(path,value)
+                if not value['complete'] and value['splits'].get('train',{}).get('covered_parts')==2:
+                    raise RuntimeError('interrupted')
+            with patch('src.common.history.write_json',side_effect=interrupt):
+                with self.assertRaisesRegex(RuntimeError,'interrupted'):
+                    build_features(prepared,features,train_parts=3,resume=True)
+            saved=json.loads((features/'manifest.json').read_text())
+            self.assertEqual(saved['splits']['val']['covered_parts'],1)
+            self.assertEqual(saved['splits']['test']['covered_parts'],1)
+            with patch('src.common.history.build_feature_part',wraps=build_feature_part) as builder:
+                build_features(prepared,features,train_parts=3,resume=True)
+                self.assertEqual(builder.call_count,1)
+            before={path:path.stat().st_mtime_ns for path in features.glob('*/*.parquet')}
+            small=build_features(prepared,features,train_parts=1,resume=True)
+            self.assertEqual(small['splits']['train']['covered_parts'],3)
+            self.assertEqual(before,{path:path.stat().st_mtime_ns for path in before})
+            source=json.loads((prepared/'manifest.json').read_text())
+            feed_path=prepared/source['splits']['train']['parts'][1]['feed_path']
+            pl.read_parquet(feed_path).with_columns(pl.col('history__event_type').list.reverse()).write_parquet(feed_path)
+            with patch('src.common.history.build_feature_part',wraps=build_feature_part) as builder:
+                build_features(prepared,features,train_parts=3,resume=True)
+                self.assertEqual(builder.call_count,1)
+            self.assertTrue(audit(prepared,features,root/'audit.json')['complete'])
+            report=analyse(prepared,features,root/'events',train_parts=3)
+            for split in ('train','val'):
+                expected=[]
+                for entry in source['splits'][split]['parts']:
+                    feeds=pl.read_parquet(prepared/entry['feed_path'])
+                    histories={row['feed_id']:row for row in feeds.iter_rows(named=True)}
+                    for candidate in pl.read_parquet(prepared/entry['candidate_path']).iter_rows(named=True):
+                        history=histories[candidate['feed_id']]
+                        if any(item==candidate['item_id'] and event==1 for item,event in zip(
+                                history['history__item_id'],history['history__event_type'])):
+                            expected.append(candidate['target'])
+                actual=report['splits'][split]['events'][0]
+                self.assertEqual(actual['rows'],len(expected))
+                self.assertEqual(actual['positives'],sum(expected))
+                for event in report['splits'][split]['events']:
+                    if event['rows']==0:
+                        self.assertIsNone(event['target_rate'])
+            corrupt=features/'train/part-00000.parquet'
+            data=pl.read_parquet(corrupt).with_columns((pl.col('h_item_cnt')+1).alias('h_item_cnt'))
+            data.write_parquet(corrupt)
+            saved=json.loads((features/'manifest.json').read_text())
+            saved['splits']['train']['parts']['part-00000.parquet']['fingerprint']=fingerprint(corrupt)
+            write_json(features/'manifest.json',saved)
+            with self.assertRaisesRegex(ValueError,'independent history formula mismatch'):
+                audit(prepared,features,root/'invalid.json')
+
     def test_hand_computed_block(self):
         # история от новых к старым: товары 7,5,7,9; категории 2,3,2,4; типы 1,2,2,1
         out = _feed_block(np.array([7, 5, 1]), np.array([2, 3, 8]),

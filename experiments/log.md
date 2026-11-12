@@ -78,3 +78,19 @@ uv run --locked python -m scripts.build_similarity_features --train-parts 2 --re
 uv run --locked python -m scripts.run_baseline_check --feature-root data/features/cosine --train-parts 2 --out runs/baseline-cosine-2parts-001
 uv run --locked python -m scripts.compare_baselines --baseline runs/baseline-cosine-001 --candidate runs/baseline-cosine-2parts-001 --allow-train-growth --out runs/baseline-cosine-2parts-001/comparison.json
 ```
+
+
+## Полный cosine-кеш — 12.11.2026
+
+Завершена материализация всех 640 файлов с девятью Float32-признаками. Train содержит 246,745,836 строк в 512 шардах, val — 1,389,971 в 64, test — 2,904,806 в 64. Всего 251,040,613 вхождений кандидатов, размер кеша 4.936 ГиБ.
+
+Полный аудит прошёл. Для каждой строки проверены ключи и порядок относительно подготовленных таблиц, схема, конечность чисел, доступность эмбеддинга и счётчики исходной истории. Девять формул независимо пересчитаны в Float64 на 1,921 лентах (153,230 кандидатов), включая 1 ленты с повторными item_id. Численная проверка охватывает эту выборку. Допуски абсолютной и относительной ошибки составляют 2e-6. Длительность аудита — 429.1 с.
+
+Расчёт возобновлялся по сохранённому манифесту. Последний проход использовал `--prefetch-parts 16`, пиковый рабочий набор процесса составил 1.197 ГиБ. Версия численных формул сохранена, все файлы имеют сведения о производителе. Аудит хранит отпечаток итогового манифеста и версию проверяющего скрипта.
+
+[Отчёт полного аудита](cosine_cache_audit_full.json). Полные cosine- и within-feed-признаки готовы для командных моделей. Подготовка после скачивания исходного архива воспроизводится одной командой, размер группы чтения можно выбрать по доступной RAM.
+
+```powershell
+uv run --locked python -m scripts.reproduce_data --raw competition --resume --all-train-features --prefetch-parts 4 --infeed data/features/infeed
+uv run --locked python -m scripts.audit_similarity_features --out runs/cosine_cache_audit_full.json
+```
