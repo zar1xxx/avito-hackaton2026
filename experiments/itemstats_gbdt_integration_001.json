@@ -1,0 +1,15 @@
+{
+  "complete": true,
+  "entry_point": "src.gbdt.prepared.load_prepared",
+  "loaded_train_parts": 1,
+  "rows": 476301,
+  "feeds": 6132,
+  "model_features": 105,
+  "incompatible_32_shard_training_rejected": true,
+  "memory": {
+    "total_physical_bytes": 16890322944,
+    "available_physical_bytes": 3810332672,
+    "working_set_bytes": 558608384,
+    "peak_working_set_bytes": 563150848
+  }
+}
