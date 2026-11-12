@@ -575,3 +575,30 @@ uv run --locked python -m scripts.audit_itemstats_features --cache data/features
 каждого файла все признаки независимо пересчитываются по всем исходным
 donor-шардам через Polars и Python. Полнота численной проверки ограничена
 этой выборкой.
+
+## Пользовательские статистики
+
+Группа `userstats` содержит 16 признаков `is_user_*` по тем же формулам,
+что статистики товаров. Для пользователя считаются показы, клики, сглаженный
+CTR, ожидаемые клики по позициям, сглаженное отношение кликов к ожидаемым,
+общее число событий в донорских историях и частоты типов 1–10. Счётчики
+суммируют вхождения событий в историях донорских лент. Повторяющиеся
+события учитываются при каждом вхождении.
+
+Для неизвестного пользователя используются нулевые счётчики, общий prior CTR
+и нейтральное отношение кликов 1. Alpha по умолчанию равно 20. Кеши для
+8 и 32 обучающих шардов имеют отдельные папки и списки исключений.
+Источниками служат соответственно остальные 504 и 480 train-шардов.
+
+```powershell
+uv run --locked python -m scripts.build_userstats_features --train-parts 8 --out data/features/userstats-008 --memory-mb 512 --threads 1 --resume
+uv run --locked python -m scripts.build_userstats_features --train-parts 32 --out data/features/userstats-032 --memory-mb 512 --threads 1 --resume
+uv run --locked python -m scripts.audit_userstats_features --cache data/features/userstats-008 --out runs/userstats_008_audit.json
+uv run --locked python -m scripts.audit_userstats_features --cache data/features/userstats-032 --out runs/userstats_032_audit.json
+```
+
+Группа подключается через соответствующий `--feature-root`. Проверяется
+исключение обучающих шардов из источников. Аудит сверяет ключи и числа всех
+строк, соответствие пользователя между кандидатами и историей каждой
+донорской ленты, а также независимо пересчитывает признаки для трёх
+кандидатов каждого выходного файла по всем исходным шардам.
