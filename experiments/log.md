@@ -94,3 +94,27 @@ uv run --locked python -m scripts.compare_baselines --baseline runs/baseline-cos
 uv run --locked python -m scripts.reproduce_data --raw competition --resume --all-train-features --prefetch-parts 4 --infeed data/features/infeed
 uv run --locked python -m scripts.audit_similarity_features --out runs/cosine_cache_audit_full.json
 ```
+
+
+## History-кеш и типы событий — 12.11.2026
+
+Дима подключил общий код `origin/danya` (`e79674c`) в ветку `dima`. Фактическая группа history содержит 46 признаков. В прежнем описании было указано 49; README исправлен по списку колонок кода.
+
+Построены выборки на 8 (3,850,759 кандидатов) и 32 (15,373,984 кандидатов) train-шардах, val/test покрыты полностью. Первый расчёт занял 86.91 с, расширение — 131.27 с. Медианное время расчёта train-шарда в итоговом кеше — 4.289 с. Наборы выбираются через linspace и пересекаются частично, поэтому кеш сохраняет объединение из 38 train-шардов. Файлы и метаданные проверяются по отпечаткам кандидатов и историй; прогресс сохраняется после каждого шарда.
+
+Аудит прошёл для 22,561,433 строк. Проверены ключи, схема, отсутствие null/NaN/inf, отпечатки обоих источников и файлов признаков. Число совпадений кандидата с товаром в истории независимо проверено на всех строках. Все 46 формул независимо пересчитаны на 498 лентах (50,326 строк), допуски rtol/atol=2e-6. Повторные item_id дополнительно проверены синтетическим тестом с сохранением отдельных candidate_index.
+
+Таблицы `h_item_evtN > 0 → доля target=1` рассчитаны для обеих выборок train и всего val. Во всех десяти группах нет наблюдений. Полная проверка исходных историй подтвердила ноль совпадений кандидата с товаром собственной истории на 38 покрытых train-шардах и всём val/test. Поэтому вероятность target по этим группам оценить невозможно. Типы 1–10 присутствуют в историях, признаки категорий и профиля событий рассчитаны. Первые и последние ленты первого файла каждого split дополнительно сверены с сырым архивом.
+
+Загрузчик `src.gbdt.prepared.load_prepared` проверен на реальном train-шарде: 476 301 строка, 73 признака (6 базовых + 9 cosine + 12 infeed + 46 history), соединение строго по вхождению кандидата. Отдельно подтверждено покрытие нужных шардов для размеров 8 и 32.
+
+Проверки — 62 unittest-теста инфраструктуры и history, все прошли. В общем uv-окружении отсутствуют PyTorch и pytest; нейросетевой pytest-модуль `tests/test_edge_cases.py` в этот прогон не входил.
+
+[Время и покрытие](history_materialization_001.json), [аудит 8 шардов](history_cache_audit_008.json), [итоговый аудит](history_cache_audit_032.json), [интеграция с GBDT](history_gbdt_integration_001.json), [события на 8 шардах](history_event_target_008.md), [события на 32 шардах](history_event_target_032.md).
+
+```powershell
+uv run --locked python -m scripts.build_history_features --train-parts 8 --resume
+uv run --locked python -m scripts.build_history_features --train-parts 32 --resume
+uv run --locked python -m scripts.audit_history_features --out runs/history_cache_audit.json
+uv run --locked python -m scripts.analyse_history_events --train-parts 32 --out experiments/history_event_target_032
+```

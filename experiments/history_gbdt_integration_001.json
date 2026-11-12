@@ -1,0 +1,18 @@
+{
+  "complete": true,
+  "entry_point": "src.gbdt.prepared.load_prepared",
+  "loaded_train_parts": 1,
+  "rows": 476301,
+  "feeds": 6132,
+  "model_features": 73,
+  "requested_train_coverage_verified": [
+    8,
+    32
+  ],
+  "memory": {
+    "total_physical_bytes": 16890322944,
+    "available_physical_bytes": 3229679616,
+    "working_set_bytes": 445591552,
+    "peak_working_set_bytes": 461598720
+  }
+}

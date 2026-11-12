@@ -24,6 +24,10 @@ class HistoryTests(unittest.TestCase):
                 make_split(raw,split,9,rng,index*100,split=='train',split!='test')
             path=raw/'train/impressions/part-00000.parquet'
             train=pl.read_parquet(path)
+            rows=train.to_dicts()
+            for column in ('item_id','category_id','item_id__embedding_idx'):
+                rows[0][column][1]=rows[0][column][0]
+            train=pl.DataFrame(rows,schema=train.schema)
             for index in range(3):
                 train.slice(index*3,3).write_parquet(path.with_name(f'part-{index:05d}.parquet'))
             test=pl.read_parquet(raw/'test/impressions/part-00000.parquet')
@@ -54,7 +58,9 @@ class HistoryTests(unittest.TestCase):
             with patch('src.common.history.build_feature_part',wraps=build_feature_part) as builder:
                 build_features(prepared,features,train_parts=3,resume=True)
                 self.assertEqual(builder.call_count,1)
-            self.assertTrue(audit(prepared,features,root/'audit.json')['complete'])
+            checked=audit(prepared,features,root/'audit.json')
+            self.assertTrue(checked['complete'])
+            self.assertGreater(checked['sampled_repeated_item_feeds'],0)
             report=analyse(prepared,features,root/'events',train_parts=3)
             for split in ('train','val'):
                 expected=[]
@@ -73,7 +79,7 @@ class HistoryTests(unittest.TestCase):
                     if event['rows']==0:
                         self.assertIsNone(event['target_rate'])
             corrupt=features/'train/part-00000.parquet'
-            data=pl.read_parquet(corrupt).with_columns((pl.col('h_item_cnt')+1).alias('h_item_cnt'))
+            data=pl.read_parquet(corrupt).with_columns((pl.col('h_cat_share')+1).alias('h_cat_share'))
             data.write_parquet(corrupt)
             saved=json.loads((features/'manifest.json').read_text())
             saved['splits']['train']['parts']['part-00000.parquet']['fingerprint']=fingerprint(corrupt)

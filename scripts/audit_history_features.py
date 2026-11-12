@@ -75,7 +75,8 @@ def audit(prepared, cache, output, *, sample_feeds=3):
     report = {'complete':False,'manifest_sha256':hashlib.sha256(manifest_bytes).hexdigest(),
               'scope':'all covered rows: keys, schema, finite values and both source fingerprints; independent formulas sampled per shard',
               'sample_feeds_per_shard':sample_feeds,'sampled_feeds':0,'sampled_candidate_rows':0,
-              'sampled_repeated_item_feeds':0,'splits':{},'bytes':0,'formula_atol':2e-6,'formula_rtol':2e-6}
+              'sampled_repeated_item_feeds':0,'splits':{},'bytes':0,'formula_atol':2e-6,'formula_rtol':2e-6,
+              'candidate_history_match_rows':{}}
     started = time.monotonic()
     for split in ('train','val','test'):
         source_parts = {entry['source']:entry for entry in source['splits'][split]['parts']}
@@ -85,6 +86,7 @@ def audit(prepared, cache, output, *, sample_feeds=3):
                 or (split != 'train' and set(group['parts']) != set(source_parts))):
             raise ValueError(f'{split}: invalid coverage')
         total = 0
+        match_rows = 0
         for number,(name,part) in enumerate(group['parts'].items(),1):
             entry = source_parts[name]
             candidate_path,feed_path = prepared/entry['candidate_path'],prepared/entry['feed_path']
@@ -106,6 +108,14 @@ def audit(prepared, cache, output, *, sample_feeds=3):
             feeds = pl.read_parquet(feed_path,columns=['feed_id','history__item_id','history__category_id','history__event_type'])
             if feeds['feed_id'].is_duplicated().any():
                 raise ValueError('duplicate feed metadata')
+            item_counts = feeds.select('feed_id',pl.col('history__item_id').alias('item_id')).explode('item_id')\
+                .filter(pl.col('item_id').is_not_null()).group_by('feed_id','item_id').len().rename({'len':'expected_item_count'})
+            item_counts = item_counts.cast({'feed_id':candidates.schema['feed_id'],'item_id':candidates.schema['item_id']})
+            checked_counts = candidates.select('feed_id','item_id').join(item_counts,on=['feed_id','item_id'],how='left',validate='m:1')\
+                .with_columns(pl.col('expected_item_count').fill_null(0))['expected_item_count'].to_numpy()
+            if not np.array_equal(checked_counts,features['h_item_cnt'].to_numpy()):
+                raise ValueError('full-row candidate-history counts differ from raw histories')
+            match_rows += int((checked_counts > 0).sum())
             ids = candidates['feed_id'].unique().sort().to_list()
             selected = {ids[index] for index in np.linspace(0,len(ids)-1,min(sample_feeds,len(ids)),dtype=int)}
             repeats = candidates.filter(pl.struct('feed_id','item_id').is_duplicated())['feed_id'].unique().to_list()
@@ -129,6 +139,7 @@ def audit(prepared, cache, output, *, sample_feeds=3):
             if number == 1 or number % 16 == 0 or number == len(group['parts']):
                 print(f'history audit {split}: {number}/{len(group["parts"])}',flush=True)
         report['splits'][split] = {'parts':len(group['parts']),'rows':total}
+        report['candidate_history_match_rows'][split] = match_rows
     if path.read_bytes() != manifest_bytes:
         raise ValueError('history manifest changed during audit')
     report.update(complete=True,duration_seconds=round(time.monotonic()-started,2),memory=memory_snapshot(),
