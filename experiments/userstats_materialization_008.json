@@ -1,0 +1,60 @@
+{
+  "complete": true,
+  "build_code_commit": "6c20d453a98265748656aaf544c4be6c8f2a75a9",
+  "feature_count": 16,
+  "excluded_train_sources": [
+    "part-00000-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00073-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00146-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00219-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00292-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00365-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00438-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00511-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet"
+  ],
+  "donor_parts": 504,
+  "donor_sources_sha256": "228cf2f77239820baa043c0e6ca6eb077a9f32542f7457c9611e74c697308c48",
+  "prepared_manifest_sha256": "c41fee4a3d34330e40afbbe660b27ed959f6d56028c002c6cb837cf8deae9874",
+  "implementation_sha256": "9663145ced6d0c3d9605e682dc80364f41818b0b6cbc5cf540a736c16a628e80",
+  "formulas_sha256": "b1785668cf57123ff452c42cd62321f0cf0bd5e91a5dbea4e4b199d22bd13d26",
+  "smoothing": 20.0,
+  "manifest_sha256": "31d7f97d1656135901005c6a2b98ce62dee824067d5c48787f7a8b65832bfb3d",
+  "prior_ctr": 0.022075560633944013,
+  "donor_impressions": 242895077,
+  "donor_clicks": 5362045,
+  "duration_seconds": 30.95,
+  "resource_config": {
+    "memory_mb": 512,
+    "threads": 1
+  },
+  "peak_working_set_bytes": 526802944,
+  "cache_bytes": 35988477,
+  "statistics_database_bytes": 4206592,
+  "coverage_unit": "candidate occurrences; not distinct users",
+  "coverage": {
+    "train": {
+      "parts": 8,
+      "rows": 3850759,
+      "user_with_impressions": 1391060,
+      "user_with_history": 1388479,
+      "user_impression_coverage": 0.3612430692234959,
+      "user_history_coverage": 0.3605728117495798
+    },
+    "val": {
+      "parts": 64,
+      "rows": 1389971,
+      "user_with_impressions": 495597,
+      "user_with_history": 495270,
+      "user_impression_coverage": 0.35655204317212374,
+      "user_history_coverage": 0.3563167864653291
+    },
+    "test": {
+      "parts": 64,
+      "rows": 2904806,
+      "user_with_impressions": 977350,
+      "user_with_history": 975605,
+      "user_impression_coverage": 0.33645964653061167,
+      "user_history_coverage": 0.33585891794495054
+    }
+  }
+}

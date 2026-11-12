@@ -1,0 +1,32 @@
+{
+  "complete": true,
+  "entry_point": "src.gbdt.prepared.load_prepared",
+  "cohorts": {
+    "008": {
+      "complete": true,
+      "requested_train_coverage_verified": 8,
+      "loaded_train_parts": 1,
+      "rows": 476301,
+      "feeds": 6132,
+      "model_features": 121,
+      "incompatible_training_rejected": true,
+      "itemstats_cache_unchanged": true
+    },
+    "032": {
+      "complete": true,
+      "requested_train_coverage_verified": 32,
+      "loaded_train_parts": 1,
+      "rows": 476301,
+      "feeds": 6132,
+      "model_features": 121,
+      "incompatible_training_rejected": true,
+      "itemstats_cache_unchanged": true
+    }
+  },
+  "memory": {
+    "total_physical_bytes": 16890322944,
+    "available_physical_bytes": 3311480832,
+    "working_set_bytes": 587079680,
+    "peak_working_set_bytes": 604246016
+  }
+}

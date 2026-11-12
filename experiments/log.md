@@ -12,6 +12,7 @@
 | 12.11.2026 | Дима | `f948754` | Cosine, 2 train-шарда; 958,087 кандидатов / 12,265 лент; 80 дерева, seed=42 | 0.359267 / 0.227615 / 0.297908 | 0.365115 / 0.307071 | 0.356759 / 0.293979 | — | Расширение train при тех же признаках/параметрах. Весь val, выбор чекпойнта только по псевдо-Public. Эталон и валидатор пройдены. |
 
 | 13.11.2026 | Дима | `3f9c669` | Cosine + 32 itemstats; 1 train-шард, 42 дерева; статистики из 504 других шардов, alpha=20 | 0.360929 / 0.231232 / 0.299849 | 0.368352 / 0.310286 | 0.357746 / 0.295374 | — | Выбор чекпойнта по pseudo-Public. Эталон и валидатор пройдены. Источники статистик исключают 8 шардов, включая обучающий. |
+| 13.11.2026 | Дима | `6c20d45` | Cosine + itemstats + 16 userstats; тот же 1 train-шард, 63 признака, 41 дерево; alpha=20 | 0.361030 / 0.230818 / 0.300081 | 0.368273 / 0.310417 | 0.357925 / 0.295649 | — | Выбор чекпойнта по pseudo-Public. Эталон и валидатор пройдены. Прирост от userstats не подтверждён: 95% интервал разности включает ноль. |
 
 Подробные параметры, хеши кода и данных, метрики и результат проверки: [baseline_check_001.json](baseline_check_001.json). Коммит в таблице — чистый коммит, на котором выполнялся прогон.
 
@@ -167,4 +168,31 @@ uv run --locked python -m scripts.compare_baselines --baseline runs/baseline-cos
 ```powershell
 uv run --locked python -m scripts.build_itemstats_features --train-parts 32 --out data/features/itemstats-032 --memory-mb 2048 --threads 1 --resume
 uv run --locked python -m scripts.audit_itemstats_features --cache data/features/itemstats-032 --out runs/itemstats_032_audit.json
+```
+
+## Userstats — 13.11.2026
+
+Реализованы 16 Float32-признаков `is_user_*`: показы, клики, CTR со сглаживанием alpha=20, ожидаемые клики по позициям, сглаженное отношение кликов к ожидаемым, число событий в донорских историях и частоты типов 1–10. Использованы те же формулы, что в itemstats. Повторные события в историях разных донорских лент считаются повторно. Для неизвестных пользователей счётчики нулевые, CTR равен общему prior, отношение кликов равно 1. Alpha задана до оценки модели и не подбиралась.
+
+Отдельные кеши для 8 и 32 выбранных train-шардов построены по остальным 504 и 480 шардам соответственно. Target исключённых обучающих шардов и val/test не участвует в расчёте. Списки источников, отпечатки кандидатов и историй, исходный код и формулы зафиксированы в manifest. Несовместимый обучающий набор отклоняется загрузчиком. Существующие itemstats-кеши сохранили прежние отпечатки.
+
+Кеш `userstats-008` содержит 8 145 536 строк, 35 988 477 байт Parquet; расчёт занял 30.95 с, пиковый рабочий набор — 526 802 944 байта. Кеш `userstats-032` содержит 19 668 761 строку, 86 074 994 байта; расчёт занял 39.58 с, пик — 557 281 280 байт. DuckDB: лимит 512 МиБ, один поток. Весь val/test покрыт в обоих кешах. В test показы пользователя известны для 33.65% / 32.80% вхождений кандидатов соответственно; доли относятся к строкам, а не уникальным пользователям.
+
+Оба аудита прошли: ключи, типы, конечность значений, источники и исключения проверены на всех строках. Формулы независимо пересчитаны по всем донорским шардам для трёх кандидатов каждого выходного файла: 408 строк / 375 пользователей и 480 строк / 446 пользователей. Общие показы, позитивы, prior и CTR всех позиций также сверены. Соответствие пользователя между кандидатами и метаданными истории проверено для каждой донорской ленты. Аудиты заняли 20.66 и 23.86 с, допуски rtol/atol=2e-6.
+
+Проверено покрытие обоих обучающих наборов всеми пятью группами. `src.gbdt.prepared.load_prepared` прочитал реальный train-шард (476 301 строка, 6 132 ленты) со 121 признаком. Для обоих кешей проверен отказ на несовместимой обучающей выборке.
+
+Выполнен один проверочный CatBoost-прогон с добавлением userstats к cosine + itemstats-008: тот же обучающий шард, параметры и val, 63 признака, 41 дерево. Чекпойнт выбран только по pseudo-Public. NDCG@30 pseudo-Private: 0.295374 → 0.295649, разность +0.000275 (+0.093%). Парный bootstrap по 10 095 лентам, 1000 повторов, seed=42: 95% интервал [-0.001836, 0.002119]. Прирост не подтверждён; группа остаётся опциональной до отдельной проверки на большем train. Private не использовался для выбора параметров. Метрики full/@10/@30 сверены с эталоном; сабмит на 2 904 806 строк прошёл валидатор после загрузки сохранённой модели. На платформу он не отправлялся.
+
+66 unittest-тестов общей инфраструктуры, history, itemstats и userstats прошли. Проверены исключение обучающих target, неизвестный пользователь, повторные кандидаты, нулевой prior, восстановление после прерывания и обнаружение повреждённых чисел. Модуль `tests/test_edge_cases.py` с необязательными PyTorch/pytest в этот прогон не входил.
+
+[Материализация 8](userstats_materialization_008.json), [материализация 32](userstats_materialization_032.json), [аудит 8](userstats_008_audit.json), [аудит 32](userstats_032_audit.json), [интеграция GBDT](userstats_gbdt_integration_001.json), [прогон модели](baseline_userstats_001.json), [парное сравнение](userstats_comparison_001.json).
+
+```powershell
+uv run --locked python -m scripts.build_userstats_features --train-parts 8 --out data/features/userstats-008 --memory-mb 512 --threads 1 --resume
+uv run --locked python -m scripts.build_userstats_features --train-parts 32 --out data/features/userstats-032 --memory-mb 512 --threads 1 --resume
+uv run --locked python -m scripts.audit_userstats_features --cache data/features/userstats-008 --out runs/userstats_008_audit.json
+uv run --locked python -m scripts.audit_userstats_features --cache data/features/userstats-032 --out runs/userstats_032_audit.json
+uv run --locked python -m scripts.run_baseline_check --data data/prepared --raw competition --feature-root data/features/cosine --feature-root data/features/itemstats-008 --feature-root data/features/userstats-008 --out runs/baseline-userstats-001 --train-parts 1 --iterations 100 --depth 6 --seed 42 --threads 2
+uv run --locked python -m scripts.compare_baselines --baseline runs/baseline-itemstats-001 --candidate runs/baseline-userstats-001 --out runs/baseline-userstats-001/comparison.json
 ```
