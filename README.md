@@ -241,6 +241,16 @@ val/test остаётся чтение через отображаемые ок�
 uv run --locked python -m scripts.benchmark_similarity --out runs/cosine-reader-benchmark.json
 ```
 
+Полный cosine-кеш train можно построить с общим чтением векторов для четырёх
+шардов за проход. Это сокращает повторное чтение большого memmap и увеличивает
+потребление RAM; `--prefetch-parts 1` оставляет обработку по одному шарду.
+Прогресс сохраняется атомарно после каждого готового файла, а записи val/test
+сохраняются и при прерывании во время расчёта train.
+
+```powershell
+uv run --locked python -m scripts.build_similarity_features --resume --prefetch-parts 4
+```
+
 ### Проверка моделей
 
 Увеличение обучающей выборки проверяется отдельно от изменения признаков:

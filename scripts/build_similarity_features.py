@@ -14,6 +14,8 @@ if __name__ == '__main__':
     parser.add_argument('--batch-size', type=int, default=16)
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--reader',choices=['auto','mapped','sequential'],default='auto')
+    parser.add_argument('--prefetch-parts',type=int,default=1,help='share one sequential vector read across 1-16 shards; higher values use more RAM')
     args = parser.parse_args()
     build_features(args.raw, args.prepared, args.catalogue, args.out,
-                   train_parts=args.train_parts, batch_size=args.batch_size, resume=args.resume,reader=args.reader)
+                   train_parts=args.train_parts, batch_size=args.batch_size, resume=args.resume,reader=args.reader,
+                   prefetch_parts=args.prefetch_parts)

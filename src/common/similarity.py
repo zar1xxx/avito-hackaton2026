@@ -14,6 +14,7 @@ import pyarrow.parquet as pq
 from src.common.embedding_catalogue import EmbeddingCatalogue, catalogue_signature
 from src.common.data import load_embeddings
 from src.common.preparation import fingerprint, flat_values, write_json, write_parquet_atomic
+from src.common.resources import memory_snapshot
 
 
 RECENT = (10, 50)
@@ -194,7 +195,7 @@ def build_prefetched_part(frame, split, vectors, vector_rows, *, batch_size=16):
     ])
 
 
-def build_features(raw, prepared, catalogue_root, output, *, train_parts=None, batch_size=16, resume=False, reader='auto'):
+def build_features(raw, prepared, catalogue_root, output, *, train_parts=None, batch_size=16, resume=False, reader='auto', prefetch_parts=1):
     raw, prepared, catalogue_root, output = (Path(path).resolve() for path in (raw, prepared, catalogue_root, output))
     if raw == output or raw in output.parents or output in raw.parents:
         raise ValueError('feature output must be separate from raw data')
@@ -206,6 +207,10 @@ def build_features(raw, prepared, catalogue_root, output, *, train_parts=None, b
     source = json.loads((prepared / 'manifest.json').read_text(encoding='utf-8'))
     if not source.get('complete'):
         raise ValueError('prepared dataset incomplete')
+    if not 1 <= prefetch_parts <= 16:
+        raise ValueError('prefetch_parts must be between 1 and 16')
+    if train_parts is not None and not 1 <= train_parts <= len(source['splits']['train']['parts']):
+        raise ValueError('train_parts outside source range')
     store = EmbeddingCatalogue(catalogue_root)
     if store.raw != raw:
         raise ValueError('catalogue references different raw data')
@@ -221,7 +226,14 @@ def build_features(raw, prepared, catalogue_root, output, *, train_parts=None, b
                 'recent_events': list(RECENT), 'missing_policy': 'preserve original per-occurrence -1 indices',
                 'vector_policy': 'original split version, no cross-split filling',
                 'catalogue_sha256': catalogue_sha, 'implementation_sha256': implementation_sha,
-                'value_signature':numerical_signature,'reader':reader,'batch_size':batch_size,'splits': {}}
+                'value_signature':numerical_signature,'reader':reader,'batch_size':batch_size,
+                'prefetch_parts':prefetch_parts,'splits': {}}
+    # Keep resumable records for later splits while an earlier split is running.
+    if compatible and previous.get('catalogue_sha256') == catalogue_sha:
+        manifest['splits'] = json.loads(json.dumps(previous.get('splits', {})))
+        for group in manifest['splits'].values():
+            for prior in group['parts'].values():
+                prior.setdefault('producer_implementation_sha256', previous.get('implementation_sha256'))
     write_json(output / 'manifest.json', manifest)
     started = time.monotonic()
     for split in ('train', 'val', 'test'):
@@ -242,7 +254,13 @@ def build_features(raw, prepared, catalogue_root, output, *, train_parts=None, b
                     and pq.read_metadata(path).num_rows == entry['candidates'])
         # Expanding a cache is monotonic: a later small run retains verified shards.
         entries = [entry for entry in all_entries if entry['source'] in requested or reusable(entry)]
-        saved = {}
+        saved = {entry['source']:dict(old_parts[entry['source']]) for entry in entries if reusable(entry)}
+        pending = [entry for entry in entries if entry['source'] not in saved]
+        group_frames = {}
+        group_vectors = group_rows = None
+        strategy = reader
+        if strategy == 'auto':
+            strategy = 'sequential' if store.vectors[split].nbytes > 1_500_000_000 else 'mapped'
         for number, entry in enumerate(entries):
             source_path = raw / split / 'impressions' / entry['source']
             stamp = fingerprint(source_path)
@@ -254,21 +272,26 @@ def build_features(raw, prepared, catalogue_root, output, *, train_parts=None, b
             reuse = reusable(entry)
             if not reuse:
                 part_started = time.monotonic()
-                frame = pl.read_parquet(source_path, columns=['feed_id', 'item_id', 'item_id__embedding_idx',
-                                                              'history__item_id__embedding_idx', 'user_embedding'])
                 # Reopen the file mapping between small feed blocks. This bounds
                 # resident mapped pages on Windows even for the 10 GB train file;
                 # copied feature columns do not retain views of the memmap.
-                strategy = reader
-                if strategy == 'auto':
-                    strategy = 'sequential' if store.vectors[split].nbytes > 1_500_000_000 else 'mapped'
                 if strategy == 'sequential':
-                    rows = required_vector_rows(frame)
-                    vectors = prefetch_vectors(raw,split,rows)
-                    features = build_prefetched_part(frame,split,vectors,rows,batch_size=batch_size)
-                    prefetched_bytes = vectors.nbytes
-                    del vectors,rows
+                    if not group_frames:
+                        group_entries, pending = pending[:prefetch_parts], pending[prefetch_parts:]
+                        group_frames = {item['source']:pl.read_parquet(raw / split / 'impressions' / item['source'],
+                                        columns=['feed_id','item_id','item_id__embedding_idx',
+                                                 'history__item_id__embedding_idx','user_embedding'])
+                                        for item in group_entries}
+                        group_rows = np.unique(np.concatenate([required_vector_rows(frame) for frame in group_frames.values()]))
+                        group_vectors = prefetch_vectors(raw,split,group_rows)
+                    frame = group_frames.pop(entry['source'])
+                    features = build_prefetched_part(frame,split,group_vectors,group_rows,batch_size=batch_size)
+                    prefetched_bytes = group_vectors.nbytes
+                    if not group_frames:
+                        group_vectors = group_rows = None
                 else:
+                    frame = pl.read_parquet(source_path, columns=['feed_id','item_id','item_id__embedding_idx',
+                                                                  'history__item_id__embedding_idx','user_embedding'])
                     chunks = []
                     for start in range(0, frame.height, FEED_WINDOW):
                         vector_window = load_embeddings(raw, split)
@@ -289,11 +312,13 @@ def build_features(raw, prepared, catalogue_root, output, *, train_parts=None, b
                 production['producer_implementation_sha256'] = prior.get('producer_implementation_sha256',previous.get('implementation_sha256'))
             saved[entry['source']] = {'path': relative.as_posix(), 'rows': entry['candidates'],
                                       'source': stamp, 'fingerprint': fingerprint(path),**production}
-            if number == 0 or (number + 1) % 16 == 0 or number + 1 == len(entries):
-                print(f"cosines {split}: {number + 1}/{len(entries)} shards; {time.monotonic() - started:.0f}s", flush=True)
-                manifest['splits'][split] = {'parts': saved, 'covered_parts': len(saved),
-                                             'total_parts': len(source['splits'][split]['parts'])}
-                write_json(output / 'manifest.json', manifest)
+            manifest['splits'][split] = {'parts': saved, 'covered_parts': len(saved),
+                                         'total_parts': len(source['splits'][split]['parts'])}
+            manifest['resources'] = memory_snapshot()
+            manifest['duration_seconds'] = round(time.monotonic() - started, 2)
+            write_json(output / 'manifest.json', manifest)
+            if not reuse or number == 0 or (number + 1) % 16 == 0 or number + 1 == len(entries):
+                print(f"cosines {split}: {len(saved)}/{len(entries)} shards; {time.monotonic() - started:.0f}s", flush=True)
         manifest['splits'][split] = {'parts': saved, 'covered_parts': len(saved),
                                      'total_parts': len(source['splits'][split]['parts'])}
         write_json(output / 'manifest.json', manifest)

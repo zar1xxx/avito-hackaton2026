@@ -10,7 +10,7 @@ import polars as pl
 from eval.make_synthetic import make_split
 from src.common.data import _feed_features
 from src.common.embedding_catalogue import build_catalogue
-from src.common.preparation import prepare_dataset, scan_candidates
+from src.common.preparation import prepare_dataset, scan_candidates, write_json
 from src.common.similarity import (attach_features, build_features, build_feature_part,
                                   feature_names, padded_features, required_vector_rows, prefetch_vectors,
                                   LEGACY_IMPLEMENTATIONS, build_prefetched_part)
@@ -133,8 +133,33 @@ class SimilarityTests(unittest.TestCase):
             self.assertEqual(first['splits']['train']['covered_parts'],1)
             first_file=features/'train/part-00000.parquet'
             first_time=first_file.stat().st_mtime_ns
-            expanded=build_features(raw,prepared,catalogue,features,train_parts=2,resume=True,reader='sequential')
+            def checkpoint_then_interrupt(path, value):
+                write_json(path, value)
+                if not value['complete'] and value['splits'].get('train',{}).get('covered_parts') == 2:
+                    raise RuntimeError('simulated interruption')
+            with patch('src.common.similarity.write_json',side_effect=checkpoint_then_interrupt):
+                with self.assertRaisesRegex(RuntimeError,'simulated interruption'):
+                    build_features(raw,prepared,catalogue,features,train_parts=2,resume=True,reader='sequential')
+            interrupted=json.loads((features/'manifest.json').read_text())
+            self.assertFalse(interrupted['complete'])
+            self.assertEqual(interrupted['splits']['train']['covered_parts'],2)
+            self.assertEqual(interrupted['splits']['val']['covered_parts'],1)
+            self.assertEqual(interrupted['splits']['test']['covered_parts'],1)
+            with patch('src.common.similarity.build_prefetched_part',wraps=build_prefetched_part) as builder:
+                expanded=build_features(raw,prepared,catalogue,features,train_parts=2,resume=True,reader='sequential')
+                self.assertEqual(builder.call_count,0)
             self.assertEqual(expanded['splits']['train']['covered_parts'],2)
+            grouped=root/'grouped'
+            with patch('src.common.similarity.prefetch_vectors',wraps=prefetch_vectors) as prefetch:
+                build_features(raw,prepared,catalogue,grouped,reader='sequential',prefetch_parts=2)
+                self.assertEqual(prefetch.call_count,3)  # One shared train read, then val and test.
+            for original in features.glob('*/*.parquet'):
+                left=pl.read_parquet(original)
+                right=pl.read_parquet(grouped/original.relative_to(features))
+                self.assertTrue(left.select('split','feed_id','candidate_index','item_id').equals(
+                    right.select('split','feed_id','candidate_index','item_id')))
+                for name in feature_names():
+                    np.testing.assert_array_equal(left[name].to_numpy().view(np.uint32),right[name].to_numpy().view(np.uint32))
             all_times={p:p.stat().st_mtime_ns for p in features.glob('*/*.parquet')}
             smaller=build_features(raw,prepared,catalogue,features,train_parts=1,resume=True)
             self.assertEqual(smaller['splits']['train']['covered_parts'],2)
