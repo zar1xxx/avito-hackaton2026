@@ -192,6 +192,13 @@ uv run --locked python -m scripts.reproduce_data --raw competition --resume --ba
 покрытию, `all_train_parts` показывает наличие всех train-шардов. Потребитель
 читает перечень файлов из манифеста и отклоняет незакешированные шарды.
 
+Полные базовые таблицы и обе группы признаков одной командой (общая загрузка
+векторов для четырёх шардов использует больше RAM):
+
+```powershell
+uv run --locked python -m scripts.reproduce_data --raw competition --resume --all-train-features --prefetch-parts 4 --infeed data/features/infeed
+```
+
 ### Каталог эмбеддингов и признаки сходства
 
 Для одного item_id векторы разных split могут различаться. Полный побайтовый
@@ -249,6 +256,16 @@ uv run --locked python -m scripts.benchmark_similarity --out runs/cosine-reader-
 
 ```powershell
 uv run --locked python -m scripts.build_similarity_features --resume --prefetch-parts 4
+```
+
+После завершения полный кеш проверяется отдельной командой. Для всех строк
+сверяются ключи, типы, конечность чисел, доступность эмбеддинга и счётчики
+истории; на трёх лентах каждого шарда и всех лентах с повторными item_id
+формулы независимо пересчитываются в Float64. Полнота численной проверки
+явно ограничена этой выборкой.
+
+```powershell
+uv run --locked python -m scripts.audit_similarity_features --out runs/cosine_cache_audit_full.json
 ```
 
 ### Проверка моделей

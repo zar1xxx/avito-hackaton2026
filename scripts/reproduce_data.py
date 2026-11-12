@@ -53,7 +53,9 @@ def prepared_cache_valid(raw, prepared, eda):
 
 def reproduce(raw=Path('competition'), prepared=Path('data/prepared'), eda=Path('runs/eda'),
               catalogue=Path('data/embedding_catalogue'), features=Path('data/features/cosine'),
-              *, resume=False, feature_train_parts=1, infeed=None, baseline_out=None):
+              *, resume=False, feature_train_parts=1, infeed=None, baseline_out=None, prefetch_parts=1):
+    if not 1 <= prefetch_parts <= 16:
+        raise ValueError('prefetch_parts must be between 1 and 16')
     if baseline_out is not None and Path(baseline_out).exists():
         raise FileExistsError('baseline output exists; choose a fresh --baseline-out directory')
     raw, prepared, eda, catalogue, features = (Path(path).resolve() for path in (raw, prepared, eda, catalogue, features))
@@ -73,7 +75,8 @@ def reproduce(raw=Path('competition'), prepared=Path('data/prepared'), eda=Path(
         expected.write_parquet(path)
     build_notebook(eda / 'summary.json', eda / '01_data_eda.ipynb')
     build_catalogue(raw, catalogue, resume=resume)
-    build_features(raw, prepared, catalogue, features, train_parts=feature_train_parts, resume=resume)
+    build_features(raw, prepared, catalogue, features, train_parts=feature_train_parts, resume=resume,
+                   prefetch_parts=prefetch_parts)
     if infeed is not None:
         build_infeed_features(prepared, Path(infeed).resolve(), resume=resume)
     print('Data, EDA, folds, catalogue and requested feature groups are ready.', flush=True)
@@ -99,7 +102,9 @@ if __name__ == '__main__':
                         help='train cosine cache size (default: the one-shard baseline; val/test are complete)')
     parser.add_argument('--all-train-features', action='store_true',
                         help='materialize cosine features for all 512 train shards; may take hours')
+    parser.add_argument('--prefetch-parts',type=int,default=1,
+                        help='share one sequential embedding read across 1-16 shards; higher values use more RAM')
     args = parser.parse_args()
     reproduce(args.raw, args.prepared, args.eda, args.catalogue, args.features,
               resume=args.resume, feature_train_parts=None if args.all_train_features else args.feature_train_parts,
-              infeed=args.infeed, baseline_out=args.baseline_out)
+              infeed=args.infeed, baseline_out=args.baseline_out, prefetch_parts=args.prefetch_parts)

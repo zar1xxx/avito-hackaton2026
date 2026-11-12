@@ -24,7 +24,8 @@ class ReproductionTests(unittest.TestCase):
             infeed = root / 'infeed'
             reference = Path('competition/baseline/calculate_metrics.py')
             baseline_out = root / 'baseline' if reference.is_file() else None
-            reproduce(raw, prepared, eda, catalogue, features, infeed=infeed, baseline_out=baseline_out)
+            reproduce(raw, prepared, eda, catalogue, features, infeed=infeed, baseline_out=baseline_out,prefetch_parts=2)
+            self.assertEqual(json.loads((features/'manifest.json').read_text())['prefetch_parts'],2)
             if baseline_out is not None:
                 report = json.loads((baseline_out / 'run.json').read_text(encoding='utf-8'))
                 self.assertTrue(report['complete'])

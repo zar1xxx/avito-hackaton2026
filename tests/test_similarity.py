@@ -10,7 +10,8 @@ import polars as pl
 from eval.make_synthetic import make_split
 from src.common.data import _feed_features
 from src.common.embedding_catalogue import build_catalogue
-from src.common.preparation import prepare_dataset, scan_candidates, write_json
+from src.common.preparation import prepare_dataset, scan_candidates, write_json, fingerprint
+from scripts.audit_similarity_features import audit
 from src.common.similarity import (attach_features, build_features, build_feature_part,
                                   feature_names, padded_features, required_vector_rows, prefetch_vectors,
                                   LEGACY_IMPLEMENTATIONS, build_prefetched_part)
@@ -160,6 +161,20 @@ class SimilarityTests(unittest.TestCase):
                     right.select('split','feed_id','candidate_index','item_id')))
                 for name in feature_names():
                     np.testing.assert_array_equal(left[name].to_numpy().view(np.uint32),right[name].to_numpy().view(np.uint32))
+            checked=audit(raw,prepared,grouped,root/'audit.json',sample_feeds=2)
+            self.assertTrue(checked['complete'])
+            # A plausible finite score can satisfy schema and domain checks while
+            # still being wrong; the independent formula must reject it.
+            corrupt_path=grouped/'train/part-00000.parquet'
+            corrupt=pl.read_parquet(corrupt_path)
+            scores=corrupt['cos_user'].to_numpy().copy()
+            scores[0]=1. if scores[0]!=1. else -1.
+            corrupt.with_columns(pl.Series('cos_user',scores)).write_parquet(corrupt_path)
+            grouped_manifest=json.loads((grouped/'manifest.json').read_text())
+            grouped_manifest['splits']['train']['parts']['part-00000.parquet']['fingerprint']=fingerprint(corrupt_path)
+            write_json(grouped/'manifest.json',grouped_manifest)
+            with self.assertRaisesRegex(ValueError,'independent formula mismatch: cos_user'):
+                audit(raw,prepared,grouped,root/'invalid-audit.json',sample_feeds=2)
             all_times={p:p.stat().st_mtime_ns for p in features.glob('*/*.parquet')}
             smaller=build_features(raw,prepared,catalogue,features,train_parts=1,resume=True)
             self.assertEqual(smaller['splits']['train']['covered_parts'],2)
