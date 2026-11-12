@@ -9,3 +9,4 @@ matplotlib>=3.9,<4
 lightgbm==4.6.0
 optuna>=4,<5
 click==8.1.8
+duckdb==1.4.3
