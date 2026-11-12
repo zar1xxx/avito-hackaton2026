@@ -41,6 +41,8 @@ scripts/reproduce_data.py        одна команда для данных, ED
 scripts/build_infeed_features.py ранги, z-score, размер и категории внутри ленты
 src/common/embedding_catalogue.py общий каталог версий эмбеддингов
 src/common/similarity.py         пакетные признаки сходства
+src/common/history.py            признаки «кандидат × история пользователя» (49 шт.)
+scripts/build_history_features.py кеш группы history
 notebooks/01_data_eda.ipynb       выполненный EDA по всему датасету
 tests/                          сверка с эталоном и проверки данных/сабмитов
 experiments/log.md       таблица экспериментов
@@ -498,3 +500,15 @@ uv run --locked python scripts/validate_submission.py competition/sample_submiss
 ```
 Метрика выбора везде — NDCG@30 (как в эталоне); early stopping — по pseudo-public, оценка — по pseudo-private.
 Режим `cv` добавляет val в обучение: val собран так же, как test (без смещения позиции), поэтому это главный кандидат на прирост.
+
+## Признаки истории (группа `history`)
+49 признаков связи кандидата с историей пользователя: был ли товар в истории, сколько раз, как давно и с какими
+типами событий; доля категории кандидата в истории (вся, последние 10/50, с затуханием, по типам событий);
+профиль пользователя по типам событий. Только история самой ленты — без target, pos и других лент.
+```powershell
+uv run --locked python -m scripts.build_history_features --train-parts 8 --resume
+uv run --locked python -m src.gbdt.run_exp --data competition --prepared data/prepared --train-parts 8 `
+    --feature-root data/features/cosine --feature-root data/features/infeed --feature-root data/features/history `
+    --out runs/cb8-hist --kind catboost --log
+```
+`--train-parts` у всех кешей (cosine, infeed, history) и у раннера должен совпадать.
