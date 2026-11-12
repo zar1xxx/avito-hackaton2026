@@ -561,7 +561,16 @@ uv run --locked python -m scripts.build_itemstats_features --train-parts 8 --out
 uv run --locked python -m scripts.audit_itemstats_features --cache data/features/itemstats-008 --out runs/itemstats_008_audit.json
 ```
 
+Для обучающей выборки из 32 шардов источниками служат оставшиеся 480.
+Этот набор имеет собственный кеш и собственный список исключений.
+
+```powershell
+uv run --locked python -m scripts.build_itemstats_features --train-parts 32 --out data/features/itemstats-032 --memory-mb 2048 --threads 1 --resume
+uv run --locked python -m scripts.audit_itemstats_features --cache data/features/itemstats-032 --out runs/itemstats_032_audit.json
+```
+
 Кеш подключается к GBDT через `--feature-root data/features/itemstats-008`.
+Для модели на 32 шардах используется `--feature-root data/features/itemstats-032`.
 Аудит проверяет все строки кеша и раздельность источников. Для трёх кандидатов
 каждого файла все признаки независимо пересчитываются по всем исходным
 donor-шардам через Polars и Python. Полнота численной проверки ограничена

@@ -148,3 +148,23 @@ uv run --locked python -m scripts.audit_itemstats_features --cache data/features
 uv run --locked python -m scripts.run_baseline_check --feature-root data/features/cosine --feature-root data/features/itemstats-008 --train-parts 1 --out runs/baseline-itemstats-001
 uv run --locked python -m scripts.compare_baselines --baseline runs/baseline-cosine-001 --candidate runs/baseline-itemstats-001 --out runs/baseline-itemstats-001/comparison.json
 ```
+
+
+## Itemstats для 32 train-шардов — 13.11.2026
+
+Построен отдельный кеш `data/features/itemstats-032` с 32 Float32-признаками товаров и категорий. Из источников исключены все 32 выбранных обучающих шарда. Статистики рассчитаны по остальным 480 train-шардам: 231,371,852 показов и 5,106,943 позитивов. Prior CTR и кривая CTR позиций рассчитаны по тем же источникам, alpha=20. Кеш `itemstats-008` сохранён с прежним отпечатком манифеста.
+
+Покрытие нового кеша — 15,373,984 кандидатов train в 32 шардах, 1,389,971 val и 2,904,806 test. Всего 19,668,761 строк, 0.631 ГиБ Parquet. Расчёт занял 506.45 с при лимите DuckDB 2048 МиБ и 1 потоке. Пиковый рабочий набор процесса составил 2.160 ГиБ. Медианное время записи train-шарда — 1.773 с.
+
+Аудит проверил ключи и порядок всех строк, схему, конечность чисел, отпечатки источников и раздельность обучающих и исходных шардов. Для 480 кандидатов все 32 признака независимо пересчитаны через Polars/Python по всем 480 исходным шардам, rtol/atol=2e-6. Общие числа показов и позитивов, prior CTR и CTR каждой позиции также совпали. Длительность аудита — 80.17 с.
+
+В test у 53.37% вхождений кандидатов есть показы товара в источниках, у 51.02% — события товара в историях источников.
+
+Проверено покрытие выбранных 32 шардов всеми четырьмя группами. GBDT-загрузчик прочитал один реальный train-шард со всеми 105 признаками; дополнительно проверено присоединение признаков для другого шарда из выбранного набора. Попытка использовать itemstats-032 для несовместимого набора из 8 шардов получила ожидаемый отказ.
+
+[Материализация](itemstats_materialization_032.json), [полный аудит кеша](itemstats_032_audit.json), [проверка GBDT-загрузчика](itemstats_gbdt_integration_032.json).
+
+```powershell
+uv run --locked python -m scripts.build_itemstats_features --train-parts 32 --out data/features/itemstats-032 --memory-mb 2048 --threads 1 --resume
+uv run --locked python -m scripts.audit_itemstats_features --cache data/features/itemstats-032 --out runs/itemstats_032_audit.json
+```

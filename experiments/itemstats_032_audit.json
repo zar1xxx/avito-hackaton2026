@@ -1,0 +1,37 @@
+{
+  "complete": true,
+  "scope": "all cache rows: keys, schema, finite values, source identities and donor exclusion; independent sampled lookup values from all donor shards",
+  "manifest_sha256": "981c2c74a991f2c9cd816a2bc045b39301857d5efdf99b19b74a4a31c2c3d3e2",
+  "donor_parts": 480,
+  "excluded_train_parts": 32,
+  "samples_per_part": 3,
+  "sampled_candidate_rows": 480,
+  "splits": {
+    "train": {
+      "parts": 32,
+      "rows": 15373984
+    },
+    "val": {
+      "parts": 64,
+      "rows": 1389971
+    },
+    "test": {
+      "parts": 64,
+      "rows": 2904806
+    }
+  },
+  "bytes": 678046768,
+  "formula_rtol": 2e-06,
+  "formula_atol": 2e-06,
+  "donor_impressions": 231371852,
+  "donor_clicks": 5106943,
+  "prior_ctr": 0.0220724472568945,
+  "duration_seconds": 80.17,
+  "memory": {
+    "total_physical_bytes": 16890322944,
+    "available_physical_bytes": 4202790912,
+    "working_set_bytes": 201199616,
+    "peak_working_set_bytes": 375345152
+  },
+  "audit_sha256": "004188da01f6f35907212e51f1ca4d3eba7e532dd3620ca66c125f5df78559bb"
+}
