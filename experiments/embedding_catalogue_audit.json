@@ -1,0 +1,57 @@
+{
+  "key": [
+    "split",
+    "item_id"
+  ],
+  "policy": "preserve per-split vectors; never overwrite an earlier split with a later vector",
+  "storage": "Parquet item catalogue + dense item-to-row indices; original memmaps back all vectors",
+  "max_item_id": 111319574,
+  "catalogue_items": 83260664,
+  "valid_items_by_split": {
+    "train": 81557944,
+    "val": 2516711,
+    "test": 4710948
+  },
+  "audit": {
+    "train/val": {
+      "compared_items": 2030667,
+      "identical": 1679344,
+      "different": 351323,
+      "cosine_min": 0.27527469396591187,
+      "cosine_max": 1.0000001192092896,
+      "zero_norm_pairs": 0,
+      "different_fraction": 0.1730086715350178,
+      "cosine_mean": 0.9991213773644598
+    },
+    "train/test": {
+      "compared_items": 3421680,
+      "identical": 2466441,
+      "different": 955239,
+      "cosine_min": 0.21498553454875946,
+      "cosine_max": 1.0000001192092896,
+      "zero_norm_pairs": 0,
+      "different_fraction": 0.27917251174861474,
+      "cosine_mean": 0.9985607822242822
+    },
+    "val/test": {
+      "compared_items": 543689,
+      "identical": 431673,
+      "different": 112016,
+      "cosine_min": 0.3375495970249176,
+      "cosine_max": 1.0000001192092896,
+      "zero_norm_pairs": 0,
+      "different_fraction": 0.2060295499816991,
+      "cosine_mean": 0.9990583953640086
+    }
+  },
+  "complete": true,
+  "within_split_conflicts": 0,
+  "identical_vector_index_alias_checks": {
+    "train": 0,
+    "val": 0,
+    "test": 0
+  },
+  "catalogue_signature": "7d147e58c90a6d2e70c771959629c36c70ec4d05ef28addce2ca7c3e3911a672",
+  "audit_source_sha256": "5c73a37041cd32ef3d1c07f762e40b86564e3060c784ce7c4bda48360bd9d78e",
+  "method": "All published candidate/history mappings; exact byte comparison of all shared valid items; sequential vector blocks. No sampling."
+}

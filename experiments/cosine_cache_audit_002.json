@@ -1,0 +1,23 @@
+{
+  "complete": true,
+  "coverage": {
+    "train": {
+      "covered_parts": 2,
+      "total_parts": 512,
+      "rows": 958087
+    },
+    "val": {
+      "covered_parts": 64,
+      "total_parts": 64,
+      "rows": 1389971
+    },
+    "test": {
+      "covered_parts": 64,
+      "total_parts": 64,
+      "rows": 2904806
+    }
+  },
+  "smaller_resume_retains_all_files_unchanged": true,
+  "value_signature": "2677b517a4025814566c7f53d30f525692f2582aed7149bebaee0c505f0818b7",
+  "scope": "two train shards, full val/test; not full-train cosine cache"
+}

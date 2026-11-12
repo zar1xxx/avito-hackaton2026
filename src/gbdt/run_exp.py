@@ -37,7 +37,11 @@ from src.gbdt.weights import ipw_weights, position_ctr
 
 def get_args(argv=None) -> argparse.Namespace:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data", required=True)
+    ap.add_argument("--data", required=True, help="сырые данные competition/ (или подготовленные при --prepared)")
+    ap.add_argument("--prepared", default=None, help="data/prepared Димы: читать готовые таблицы вместо сырых лент")
+    ap.add_argument("--feature-root", action="append", default=[],
+                    help="группа признаков Димы (data/features/cosine, data/features/infeed); можно повторять")
+    ap.add_argument("--train-parts", type=int, default=1, help="сколько train-шардов брать при --prepared")
     ap.add_argument("--out", required=True)
     ap.add_argument("--mode", choices=["holdout", "cv", "final"], default="holdout")
     ap.add_argument("--kind", choices=["catboost", "lightgbm"], default="catboost")
@@ -69,14 +73,19 @@ def get_args(argv=None) -> argparse.Namespace:
 def load_all(a: argparse.Namespace, need_test: bool) -> tuple[dict[str, pl.DataFrame], list[str]]:
     frames, extra_cols = {}, []
     splits = ["train", "val"] + (["test"] if need_test else [])
+    base_feats = MODEL_FEATURES
     for s in splits:
-        df = load_split(a.data, s, a.max_parts, a.n_jobs, a.cache)
+        if a.prepared:
+            from src.gbdt.prepared import load_prepared
+            df, base_feats = load_prepared(a.prepared, s, a.feature_root, a.train_parts)
+        else:
+            df = load_split(a.data, s, a.max_parts, a.n_jobs, a.cache)
         df, extra_cols = attach(df, a.features_dir, a.extra, s)
         if "pos" not in df.columns:
             df = df.with_columns(pl.lit(None, dtype=pl.Int16).alias("pos"))
         frames[s] = df.with_columns(pl.col("category_id").cast(pl.Int32), pl.col("pos").cast(pl.Int16)
                                     ).sort("feed_id", maintain_order=True)
-    return frames, MODEL_FEATURES + extra_cols
+    return frames, base_feats + extra_cols
 
 
 def apply_pos(df: pl.DataFrame, a: argparse.Namespace, is_train: bool) -> pl.DataFrame:

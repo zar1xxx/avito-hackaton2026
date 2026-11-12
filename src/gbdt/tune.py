@@ -59,7 +59,7 @@ def main(argv=None) -> None:
         m = Ranker(a.kind, feats, a.loss, a.iterations, main_p["lr"], main_p["depth"], a.seed, a.task_type, extra)
         m.fit(tr, w, es)
         trial.set_user_attr("best_iteration", m.best_iteration)
-        return mean_ndcg(ev["feed_id"].to_numpy(), ev["target"].to_numpy(), m.predict(ev))
+        return mean_ndcg(ev["feed_id"].to_numpy(), ev["target"].to_numpy(), m.predict(ev), cutoff=30)
 
     study = optuna.create_study(direction="maximize", sampler=optuna.samplers.TPESampler(seed=a.seed))
     study.optimize(objective, n_trials=ns.trials, timeout=ns.timeout)

@@ -1,0 +1,51 @@
+{
+  "matched_setup": false,
+  "matched_validation": true,
+  "comparison_type": "train_growth",
+  "val_rows": 1389971,
+  "train_parts": [
+    "part-00000-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet"
+  ],
+  "candidate_train_parts": [
+    "part-00000-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00511-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet"
+  ],
+  "baseline_commit": "ff159efbbbfe108fc3eb7c3d027a80fe9c2e863f",
+  "candidate_commit": "f9487544fa9afb3ba41a6b7278fbe26fecb42387",
+  "selection": "both checkpoints selected on pseudo-Public; fixed pseudo-Private compared after fitting",
+  "scores_dtype": "float32",
+  "metrics": {
+    "pseudo_public": {
+      "feeds": 4328,
+      "baseline_ndcg30": 0.30497644661240136,
+      "candidate_ndcg30": 0.3070706771910661,
+      "delta": 0.0020942305786647575,
+      "relative_gain_percent": 0.6866860054036708
+    },
+    "pseudo_private": {
+      "feeds": 10095,
+      "baseline_ndcg30": 0.29188890010914964,
+      "candidate_ndcg30": 0.29397926252910556,
+      "delta": 0.0020903624199559157,
+      "relative_gain_percent": 0.7161500211807439
+    },
+    "all": {
+      "feeds": 14423,
+      "baseline_ndcg30": 0.29581616220898943,
+      "candidate_ndcg30": 0.2979076853715721,
+      "delta": 0.0020915231625826536,
+      "relative_gain_percent": 0.7070347836860332
+    }
+  },
+  "paired_bootstrap_private": {
+    "unit": "feed",
+    "replicates": 1000,
+    "seed": 42,
+    "delta_95_ci": [
+      -0.00012852982477522425,
+      0.00422647760362567
+    ],
+    "fraction_delta_positive": 0.962,
+    "scope": "sampling uncertainty on this fixed val; not an estimate for full-train models"
+  }
+}

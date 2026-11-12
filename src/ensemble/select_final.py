@@ -1,5 +1,6 @@
 """Выбор двух финальных решений по val.
 
+Метрика — NDCG@30 (как в эталоне calculate_metrics.py).
 Принцип: ориентируемся на pseudo-private, а не на Public лидерборда (Public — всего ~30% лент).
 Для каждого кандидата считаем NDCG, парный бутстреп против лидера (по лентам pseudo-private) и
 корреляцию с лидером. Финал A — лучший по pseudo-private. Финал B — лучший «безопасный» кандидат
@@ -49,10 +50,10 @@ def main(argv=None) -> None:
         if df["score"].null_count():
             raise ValueError(f"{r}: нет предсказаний для части val")
         s = df["score"].to_numpy()
-        fid, vals = per_feed_ndcg(f[mpriv], df["target"].to_numpy()[mpriv], s[mpriv])
+        fid, vals = per_feed_ndcg(f[mpriv], df["target"].to_numpy()[mpriv], s[mpriv], cutoff=30)
         perfeed[Path(r).name] = vals
         zs[Path(r).name] = feed_zscore(f, s)
-        _, vp = per_feed_ndcg(f[~mpriv], df["target"].to_numpy()[~mpriv], s[~mpriv])
+        _, vp = per_feed_ndcg(f[~mpriv], df["target"].to_numpy()[~mpriv], s[~mpriv], cutoff=30)
         rows[Path(r).name] = {"pub": float(vp.mean()), "priv": float(vals.mean()),
                               "priv_se": float(vals.std(ddof=1) / np.sqrt(len(vals)))}
     names = list(rows)

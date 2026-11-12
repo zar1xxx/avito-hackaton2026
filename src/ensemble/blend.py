@@ -1,4 +1,4 @@
-"""Ансамбль моделей: средние z-скоры внутри ленты, подбор весов и стекинг.
+"""Ансамбль моделей (метрика подбора — NDCG@30, как в эталоне): средние z-скоры внутри ленты, подбор весов и стекинг.
 
 Вход: папки запусков с val_pred.parquet (feed_id, item_id, score) и test_pred.parquet.
 Для честного ансамбля val-предсказания должны быть OOF (run_exp --mode cv для GBDT; то же — у нейросети Августа),
@@ -56,8 +56,8 @@ def ndcg_on(df: pl.DataFrame, score: np.ndarray, feeds: np.ndarray | None = None
     f, t = df["feed_id"].to_numpy(), df["target"].to_numpy()
     if feeds is not None:
         m = mask_feeds(f, feeds)
-        return mean_ndcg(f[m], t[m], score[m])
-    return mean_ndcg(f, t, score)
+        return mean_ndcg(f[m], t[m], score[m], cutoff=30)
+    return mean_ndcg(f, t, score, cutoff=30)
 
 
 def fit_weights(df: pl.DataFrame, z: np.ndarray, feeds: np.ndarray, sweeps: int = 3) -> np.ndarray:

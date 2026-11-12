@@ -5,10 +5,10 @@
 - лента без позитивов -> NDCG = 1;
 - итог = среднее по лентам с равным весом.
 
-В описании сказано: DCG считается по всем кандидатам, а IDCG@30 — по первым 30.
-Это нестыковка, поэтому поддерживаем оба режима и сверяем с calculate_metrics.py:
+Эталон competition/baseline/calculate_metrics.py считает full, @10 и @30.
+При cutoff=k и DCG, и IDCG ограничены первыми k кандидатами:
 - idcg_k=None   : IDCG по всем позитивам (классический NDCG без отсечения)
-- idcg_k=30     : IDCG@30, DCG по всем кандидатам (буквально как в тексте)
+- idcg_k=30     : экспериментальный вариант из описания, не метрика эталона
 - cutoff=30     : и DCG, и IDCG только по первым 30 позициям (NDCG@30)
 """
 from __future__ import annotations
@@ -20,6 +20,22 @@ def _discounts(n: int) -> np.ndarray:
     return 1.0 / np.log2(np.arange(2, n + 2))
 
 
+def _validate(target: np.ndarray, score: np.ndarray, cutoff: int | None, idcg_k: int | None) -> None:
+    if target.ndim != 1 or score.ndim != 1 or target.shape != score.shape:
+        raise ValueError("target and score must be one-dimensional arrays of equal length")
+    if not len(target):
+        raise ValueError("cannot evaluate an empty set of candidates")
+    if not np.isin(target, [0, 1]).all():
+        raise ValueError("target must contain only binary labels (0/1)")
+    if not np.isfinite(score).all():
+        raise ValueError("score must be finite")
+    for name, value in (("cutoff", cutoff), ("idcg_k", idcg_k)):
+        if value is not None and (not isinstance(value, (int, np.integer)) or value <= 0):
+            raise ValueError(f"{name} must be a positive integer")
+    if cutoff is not None and idcg_k is not None:
+        raise ValueError("use either cutoff or idcg_k, not both")
+
+
 def ndcg_one(
     target: np.ndarray,
     score: np.ndarray,
@@ -28,6 +44,7 @@ def ndcg_one(
 ) -> float:
     target = np.asarray(target, dtype=np.float64)
     score = np.asarray(score, dtype=np.float64)
+    _validate(target, score, cutoff, idcg_k)
     n = len(target)
     if target.sum() == 0:
         return 1.0
@@ -79,8 +96,13 @@ def mean_ndcg(
 ) -> float:
     """Среднее NDCG по лентам. Массивы выровнены по строкам."""
     feed_ids = np.asarray(feed_ids)
-    target = np.asarray(target)
-    score = np.asarray(score)
+    target = np.asarray(target, dtype=np.float64)
+    score = np.asarray(score, dtype=np.float64)
+    _validate(target, score, cutoff, idcg_k)
+    if feed_ids.ndim != 1 or len(feed_ids) != len(target):
+        raise ValueError("feed_ids must be a one-dimensional array aligned with target and score")
+    if not np.issubdtype(feed_ids.dtype, np.integer):
+        raise ValueError("feed_ids must contain integer IDs")
     order = np.argsort(feed_ids, kind="stable")
     f = feed_ids[order]
     bounds = np.flatnonzero(np.diff(f)) + 1
@@ -95,5 +117,6 @@ def all_variants(feed_ids, target, score) -> dict[str, float]:
     return {
         "ndcg_full": mean_ndcg(feed_ids, target, score),
         "ndcg_idcg30": mean_ndcg(feed_ids, target, score, idcg_k=30),
+        "ndcg@10": mean_ndcg(feed_ids, target, score, cutoff=10),
         "ndcg@30": mean_ndcg(feed_ids, target, score, cutoff=30),
     }

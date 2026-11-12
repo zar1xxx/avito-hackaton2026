@@ -103,10 +103,15 @@ def _feed_features(row: dict, emb: np.memmap) -> dict[str, np.ndarray]:
         sim = cu @ hu.T  # (M, H_ok)
         out["cos_hist_mean"] = (cu @ hu.mean(0)) * has_emb
         out["cos_hist_max"] = sim.max(1) * has_emb
-        rec = hu[:HIST_RECENT]
-        s_rec = cu @ rec.T
-        out["cos_hist_recent_max"] = s_rec.max(1) * has_emb
-        out["cos_hist_recent_mean"] = s_rec.mean(1) * has_emb
+        recent_ok = h_ok.copy()
+        recent_ok[HIST_RECENT:] = False
+        if recent_ok.any():
+            s_rec = cu @ _unit(he[recent_ok]).T
+            out["cos_hist_recent_max"] = s_rec.max(1) * has_emb
+            out["cos_hist_recent_mean"] = s_rec.mean(1) * has_emb
+        else:
+            out["cos_hist_recent_max"] = np.zeros(m, dtype=np.float32)
+            out["cos_hist_recent_mean"] = np.zeros(m, dtype=np.float32)
     else:
         for k in ("cos_hist_mean", "cos_hist_max", "cos_hist_recent_max", "cos_hist_recent_mean"):
             out[k] = np.zeros(m, dtype=np.float32)
@@ -126,16 +131,8 @@ def _feed_features(row: dict, emb: np.memmap) -> dict[str, np.ndarray]:
 
 def _in_feed_stats(df: pl.DataFrame) -> pl.DataFrame:
     """Ранги и z-score признаков внутри ленты + размер ленты."""
-    exprs = [pl.len().over("feed_id").alias("feed_size")]
-    for c in FLOAT_FEATS + ["cos_user", "cos_hist_max"]:
-        exprs.append((pl.col(c).rank("average").over("feed_id") / pl.len().over("feed_id")).alias(f"{c}_rank"))
-        exprs.append(
-            ((pl.col(c) - pl.col(c).mean().over("feed_id")) / (pl.col(c).std().over("feed_id") + 1e-6))
-            .alias(f"{c}_z")
-        )
-    exprs.append((pl.col("category_id").count().over("feed_id", "category_id")
-                  / pl.len().over("feed_id")).alias("cat_share_feed"))
-    return df.with_columns(exprs)
+    from src.common.infeed import add_infeed_stats
+    return add_infeed_stats(df, FLOAT_FEATS + ["cos_user", "cos_hist_max"])
 
 
 def build_part(path: Path, emb: np.memmap) -> pl.DataFrame:

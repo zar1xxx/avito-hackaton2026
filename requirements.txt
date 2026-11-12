@@ -1,7 +1,11 @@
-numpy
-pandas
-polars
-pyarrow
-catboost
-lightgbm
-optuna
+# Основной способ установки — uv по uv.lock (Python 3.11):  uv sync --locked
+# Этот файл — запасной для pip, версии совпадают с pyproject.toml.
+catboost==1.2.10
+numpy==1.26.4
+polars==1.14.0
+pandas>=2.2,<3
+pyarrow>=18,<24
+matplotlib>=3.9,<4
+lightgbm==4.6.0
+optuna>=4,<5
+click==8.1.8

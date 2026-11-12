@@ -1,7 +1,7 @@
 """Генератор синтетического датасета в формате соревнования — только чтобы гонять и отлаживать код.
 
 Это НЕ данные Авито и НЕ модель их поведения. Что повторяет формат и свойства из описания:
-- train: кандидаты стоят в порядке «боевого рекомендатора» (есть pos, часть pos пропущена),
+- train: кандидаты стоят в порядке «боевого рекомендатора» (есть pos, в нумерации pos есть дыры),
   вероятность клика падает с позицией (смещение показа);
 - val/test: порядок случайный, смещения нет, кандидаты перемешаны; pos нет;
 - у каждого сплита своя таблица эмбеддингов с другими индексами, item_id общий; часть эмбеддингов = -1;
@@ -97,10 +97,15 @@ def make_split(root: Path, name: str, n_feeds: int, parts: int, rng: np.random.G
         if with_target:
             row["target"] = target.tolist()
         if biased:
-            p = pos.astype(np.int16).tolist()
-            for k in np.flatnonzero(rng.random(m) < 0.05):   # пропуски в pos после фильтрации
-                p[k] = None
-            row["pos"] = p
+            # «пропуски» в pos = дыры в нумерации после фильтрации, а не null: выкидываем ~5% кандидатов
+            keep = np.flatnonzero(rng.random(m) >= 0.05)
+            if len(keep) >= 5:
+                for k in ("category_id", "f1", "f2", "f3", "f4", "f5", "item_id__embedding_idx", "item_id", "target"):
+                    row[k] = [row[k][j] for j in keep]
+                pos = pos[keep]
+                if sum(row["target"]) == 0:
+                    row["target"][0] = 1
+            row["pos"] = pos.astype(np.int16).tolist()
         rows.append(row)
 
     schema_over = {"pos": pl.List(pl.Int16)} if biased else {}

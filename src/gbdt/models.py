@@ -41,7 +41,7 @@ class Ranker:
 
     def _fit_cb(self, tr, weight, va, es_rounds):
         params = dict(loss_function=self.loss, iterations=self.iterations, learning_rate=self.lr,
-                      depth=self.depth, eval_metric="NDCG", random_seed=self.seed,
+                      depth=self.depth, eval_metric="NDCG:top=30;type=Base", random_seed=self.seed,
                       task_type=self.task_type, verbose=200, allow_writing_files=False, **self.extra)
         if va is not None:
             params.update(od_type="Iter", od_wait=es_rounds)

@@ -1,0 +1,45 @@
+{
+  "matched_setup": true,
+  "val_rows": 1389971,
+  "train_parts": [
+    "part-00000-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet"
+  ],
+  "baseline_commit": "0eb8c433fdf53449db6254b86d6ad5d9687fbe93",
+  "candidate_commit": "ff159efbbbfe108fc3eb7c3d027a80fe9c2e863f",
+  "selection": "both checkpoints selected on pseudo-Public; fixed pseudo-Private compared after fitting",
+  "scores_dtype": "float32",
+  "metrics": {
+    "pseudo_public": {
+      "feeds": 4328,
+      "baseline_ndcg30": 0.2656542078912705,
+      "candidate_ndcg30": 0.30497644661240136,
+      "delta": 0.03932223872113089,
+      "relative_gain_percent": 14.802038722919486
+    },
+    "pseudo_private": {
+      "feeds": 10095,
+      "baseline_ndcg30": 0.257534369989085,
+      "candidate_ndcg30": 0.29188890010914964,
+      "delta": 0.03435453012006462,
+      "relative_gain_percent": 13.339784558278824
+    },
+    "all": {
+      "feeds": 14423,
+      "baseline_ndcg30": 0.2599709406360077,
+      "candidate_ndcg30": 0.29581616220898943,
+      "delta": 0.035845221572981756,
+      "relative_gain_percent": 13.788164740754475
+    }
+  },
+  "paired_bootstrap_private": {
+    "unit": "feed",
+    "replicates": 1000,
+    "seed": 42,
+    "delta_95_ci": [
+      0.03037150678923248,
+      0.03855737454232103
+    ],
+    "fraction_delta_positive": 1.0,
+    "scope": "sampling uncertainty on this fixed val; not an estimate for full-train models"
+  }
+}
