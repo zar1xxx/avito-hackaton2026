@@ -1,0 +1,91 @@
+{
+  "complete": true,
+  "build_code_commit": "f4257d4",
+  "scope": "8 train shards then 32 selected shards, full val/test; retained cache union audited",
+  "runs": {
+    "8": {
+      "requested_train_parts": 8,
+      "selected_train_sources": [
+        "part-00000-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+        "part-00073-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+        "part-00146-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+        "part-00219-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+        "part-00292-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+        "part-00365-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+        "part-00438-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+        "part-00511-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet"
+      ],
+      "covered_parts": {
+        "train": 8,
+        "val": 64,
+        "test": 64
+      },
+      "duration_seconds": 86.91,
+      "median_train_shard_seconds": 4.0625,
+      "peak_working_set_bytes": 391532544,
+      "implementation_sha256": "dca5c61a395e237e0fe68a69c088bfe4b7491a39e2c8fd13fe2832cbb9db476a",
+      "prepared_manifest_sha256": "c41fee4a3d34330e40afbbe660b27ed959f6d56028c002c6cb837cf8deae9874",
+      "feature_count": 46,
+      "train_candidates": 3850759,
+      "candidate_history_match_rows": {
+        "train": 0,
+        "val": 0,
+        "test": 0
+      }
+    },
+    "32": {
+      "requested_train_parts": 32,
+      "selected_train_sources": [
+        "part-00000-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+        "part-00016-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+        "part-00032-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+        "part-00049-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+        "part-00065-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+        "part-00082-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+        "part-00098-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+        "part-00115-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+        "part-00131-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+        "part-00148-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+        "part-00164-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+        "part-00181-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+        "part-00197-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+        "part-00214-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+        "part-00230-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+        "part-00247-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+        "part-00263-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+        "part-00280-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+        "part-00296-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+        "part-00313-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+        "part-00329-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+        "part-00346-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+        "part-00362-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+        "part-00379-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+        "part-00395-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+        "part-00412-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+        "part-00428-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+        "part-00445-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+        "part-00461-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+        "part-00478-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+        "part-00494-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+        "part-00511-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet"
+      ],
+      "covered_parts": {
+        "train": 38,
+        "val": 64,
+        "test": 64
+      },
+      "duration_seconds": 131.27,
+      "median_train_shard_seconds": 4.289,
+      "peak_working_set_bytes": 394776576,
+      "implementation_sha256": "dca5c61a395e237e0fe68a69c088bfe4b7491a39e2c8fd13fe2832cbb9db476a",
+      "prepared_manifest_sha256": "c41fee4a3d34330e40afbbe660b27ed959f6d56028c002c6cb837cf8deae9874",
+      "feature_count": 46,
+      "train_candidates": 15373984,
+      "candidate_history_match_rows": {
+        "train": 0,
+        "val": 0,
+        "test": 0
+      }
+    }
+  }
+}

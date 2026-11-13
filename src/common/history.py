@@ -20,6 +20,7 @@ import polars as pl
 import pyarrow.parquet as pq
 
 from src.common.preparation import fingerprint, write_json, write_parquet_atomic
+from src.common.resources import memory_snapshot
 
 KEY = ['split', 'feed_id', 'candidate_index']
 EVENT_TYPES = list(range(1, 11))   # по EDA в истории встречаются типы 1..10
@@ -98,6 +99,8 @@ def _feed_block(cand_item, cand_cat, h_item, h_cat, h_evt):
 def build_feature_part(candidates: pl.DataFrame, feeds: pl.DataFrame) -> pl.DataFrame:
     """candidates: split, feed_id, candidate_index, item_id, category_id; feeds: feed_id + history__*."""
     candidates = candidates.select(*KEY, 'item_id', 'category_id').sort('feed_id', 'candidate_index')
+    if feeds['feed_id'].null_count() or feeds['feed_id'].is_duplicated().any():
+        raise ValueError('feeds must have unique non-null feed_id')
     if candidates.select(KEY).is_duplicated().any():
         raise ValueError('duplicate candidate occurrence key')
     hist = {int(r[0]): r[1:] for r in feeds.select(
@@ -141,6 +144,8 @@ def build_features(prepared, output, *, train_parts=None, resume=False):
     source = json.loads(source_path.read_text(encoding='utf-8'))
     if not source.get('complete'):
         raise ValueError('prepared dataset incomplete')
+    if train_parts is not None and not 1 <= train_parts <= len(source['splits']['train']['parts']):
+        raise ValueError('train_parts outside source range')
     implementation = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     source_sha = hashlib.sha256(source_path.read_bytes()).hexdigest()
     manifest = {'format_version': 1, 'feature_group': 'history', 'complete': False, 'key': KEY,
@@ -149,10 +154,12 @@ def build_features(prepared, output, *, train_parts=None, resume=False):
                 'target_policy': 'only the history arrays of the same feed and candidate item/category; '
                                  'no target, original pos or other feeds',
                 'splits': {}}
-    write_json(output / 'manifest.json', manifest)
-    started = time.monotonic()
     same_code = (resume and previous.get('implementation_sha256') == implementation
                  and previous.get('source_manifest_sha256') == source_sha)
+    if same_code:
+        manifest['splits'] = json.loads(json.dumps(previous.get('splits', {})))
+    write_json(output / 'manifest.json', manifest)
+    started = time.monotonic()
     for split in ('train', 'val', 'test'):
         all_entries = source['splits'][split]['parts']
         entries = all_entries
@@ -161,31 +168,43 @@ def build_features(prepared, output, *, train_parts=None, resume=False):
                 raise ValueError('train_parts outside source range')
             entries = [entries[int(i)] for i in np.linspace(0, len(entries) - 1, train_parts, dtype=int)]
         prior_parts = previous.get('splits', {}).get(split, {}).get('parts', {}) if same_code else {}
-        saved = dict(prior_parts) if split == 'train' else {}   # расширение кеша не теряет готовые шарды
+        def reusable(entry):
+            prior = prior_parts.get(entry['source'], {})
+            path = output / split / entry['source']
+            return (prior.get('source') == fingerprint(prepared / entry['candidate_path'])
+                    and prior.get('feeds_source') == fingerprint(prepared / entry['feed_path'])
+                    and path.exists() and prior.get('fingerprint') == fingerprint(path)
+                    and pq.read_metadata(path).num_rows == entry['candidates'])
+        requested = {entry['source'] for entry in entries}
+        entries = [entry for entry in all_entries if entry['source'] in requested or reusable(entry)]
+        saved = {entry['source']:dict(prior_parts[entry['source']]) for entry in entries if reusable(entry)}
         for number, entry in enumerate(entries):
+            part_started = time.monotonic()
             cand_path = prepared / entry['candidate_path']
+            feed_path = prepared / entry['feed_path']
             stamp = fingerprint(cand_path)
+            feed_stamp = fingerprint(feed_path)
             path = output / split / entry['source']
             prior = prior_parts.get(entry['source'], {})
-            reuse = (prior.get('source') == stamp and path.exists() and prior.get('fingerprint') == fingerprint(path)
-                     and pq.read_metadata(path).num_rows == entry['candidates'])
+            reuse = reusable(entry)
             if not reuse:
                 features = build_feature_part(
                     pl.read_parquet(cand_path, columns=[*KEY, 'item_id', 'category_id']),
-                    pl.read_parquet(prepared / entry['feed_path'], columns=[
+                    pl.read_parquet(feed_path, columns=[
                         'feed_id', 'history__item_id', 'history__category_id', 'history__event_type']))
                 if features.height != entry['candidates']:
                     raise ValueError('feature rows differ from prepared candidates')
                 write_parquet_atomic(features, path)
                 del features
             saved[entry['source']] = {'path': path.relative_to(output).as_posix(), 'rows': entry['candidates'],
-                                      'source': stamp, 'fingerprint': fingerprint(path)}
-            if number == 0 or (number + 1) % 8 == 0 or number + 1 == len(entries):
-                print(f'history {split}: {number + 1}/{len(entries)} shards; {time.monotonic() - started:.0f}s',
+                                      'source': stamp, 'feeds_source':feed_stamp,'fingerprint': fingerprint(path),
+                                      'duration_seconds':prior.get('duration_seconds',0) if reuse else round(time.monotonic()-part_started,3)}
+            manifest['splits'][split] = {'parts':saved,'covered_parts':len(saved),'total_parts':len(all_entries)}
+            manifest['resources'] = memory_snapshot()
+            write_json(output / 'manifest.json', manifest)
+            if not reuse or number == 0 or (number + 1) % 8 == 0 or number + 1 == len(entries):
+                print(f'history {split}: {len(saved)}/{len(entries)} shards; {time.monotonic() - started:.0f}s',
                       flush=True)
-                manifest['splits'][split] = {'parts': saved, 'covered_parts': len(saved),
-                                             'total_parts': len(all_entries)}
-                write_json(output / 'manifest.json', manifest)
         manifest['splits'][split] = {'parts': saved, 'covered_parts': len(saved), 'total_parts': len(all_entries)}
     manifest['complete'] = True
     manifest['all_train_parts'] = manifest['splits']['train']['covered_parts'] == manifest['splits']['train']['total_parts']

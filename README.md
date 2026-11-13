@@ -41,7 +41,7 @@ scripts/reproduce_data.py        одна команда для данных, ED
 scripts/build_infeed_features.py ранги, z-score, размер и категории внутри ленты
 src/common/embedding_catalogue.py общий каталог версий эмбеддингов
 src/common/similarity.py         пакетные признаки сходства
-src/common/history.py            признаки «кандидат × история пользователя» (49 шт.)
+src/common/history.py            признаки «кандидат × история пользователя» (46 шт.)
 scripts/build_history_features.py кеш группы history
 notebooks/01_data_eda.ipynb       выполненный EDA по всему датасету
 tests/                          сверка с эталоном и проверки данных/сабмитов
@@ -502,7 +502,7 @@ uv run --locked python scripts/validate_submission.py competition/sample_submiss
 Режим `cv` добавляет val в обучение: val собран так же, как test (без смещения позиции), поэтому это главный кандидат на прирост.
 
 ## Признаки истории (группа `history`)
-49 признаков связи кандидата с историей пользователя: был ли товар в истории, сколько раз, как давно и с какими
+46 признаков связи кандидата с историей пользователя: был ли товар в истории, сколько раз, как давно и с какими
 типами событий; доля категории кандидата в истории (вся, последние 10/50, с затуханием, по типам событий);
 профиль пользователя по типам событий. Только история самой ленты — без target, pos и других лент.
 ```powershell
@@ -511,4 +511,94 @@ uv run --locked python -m src.gbdt.run_exp --data competition --prepared data/pr
     --feature-root data/features/cosine --feature-root data/features/infeed --feature-root data/features/history `
     --out runs/cb8-hist --kind catboost --log
 ```
-`--train-parts` у всех кешей (cosine, infeed, history) и у раннера должен совпадать.
+Каждый кеш должен покрывать конкретные шарды, выбранные раннером через
+`--train-parts`. Полный кеш подходит для любой меньшей выборки. Наборы из 8 и 32
+шардов выбираются через `linspace` и могут пересекаться частично. Расширение
+history сохраняет все проверенные файлы. Кеш проверяет отпечатки таблиц
+кандидатов и историй, прогресс сохраняется после каждого шарда.
+
+Аудит проверяет ключи, схемы, конечность чисел и отпечатки всех покрытых файлов.
+Все 46 формул независимо пересчитываются на трёх лентах каждого шарда и
+дополнительно на лентах с повторными item_id. Таблица событий использует
+условие `h_item_evtN > 0`, сохраняет число кандидатов, позитивов и лент,
+проверяет весь val и выбранные шарды train. Группы событий могут пересекаться.
+
+```powershell
+uv run --locked python -m scripts.audit_history_features --out runs/history_cache_audit.json
+uv run --locked python -m scripts.analyse_history_events --train-parts 8 --out experiments/history_event_target_008
+```
+
+## Статистики товаров и категорий
+
+Группа `itemstats` содержит 32 Float32-признака. Для товара и категории считаются
+показы, клики, сглаженный CTR, ожидаемые клики по позициям, сглаженное отношение
+наблюдаемых кликов к ожидаемым, число событий в историях и частоты типов 1–10.
+Повторные события в историях учитываются как отдельные вхождения.
+
+Для модели на восьми train-шардах источником служат остальные 504 шарда.
+По этим же источникам оценивается CTR каждой позиции и общий prior CTR.
+Для CTR используется `(clicks + alpha * prior) / (impressions + alpha)`.
+Для поправки на позицию используется
+`(clicks + alpha * prior) / (expected_clicks + alpha * prior)`.
+Значение `alpha` по умолчанию равно 20. Для неизвестных товаров CTR равен prior,
+а отношение кликов равно 1. При нулевом знаменателе отношение также равно 1.
+
+Группа предназначена для конкретного набора обучающих шардов. При изменении
+набора нужно выбрать отдельную выходную папку, например `itemstats-032`.
+Манифест содержит списки исключённых и исходных шардов, параметры сглаживания,
+отпечатки всех входов и версию реализации. Присоединение к train проверяет,
+что обучающие шарды исключены из источников статистик. Target val/test
+используется только при последующей оценке модели.
+
+DuckDB хранит агрегаты и временные данные в папке кеша. Готовые таблицы
+и Parquet переиспользуются через `--resume`. Лимит памяти и число потоков
+можно менять при возобновлении. Для реального запуска задан лимит 1536 МиБ
+и один поток после достижения лимита 1024 МиБ при агрегации историй.
+
+```powershell
+uv sync --locked
+uv run --locked python -m scripts.build_itemstats_features --train-parts 8 --out data/features/itemstats-008 --memory-mb 1536 --threads 1 --resume
+uv run --locked python -m scripts.audit_itemstats_features --cache data/features/itemstats-008 --out runs/itemstats_008_audit.json
+```
+
+Для обучающей выборки из 32 шардов источниками служат оставшиеся 480.
+Этот набор имеет собственный кеш и собственный список исключений.
+
+```powershell
+uv run --locked python -m scripts.build_itemstats_features --train-parts 32 --out data/features/itemstats-032 --memory-mb 2048 --threads 1 --resume
+uv run --locked python -m scripts.audit_itemstats_features --cache data/features/itemstats-032 --out runs/itemstats_032_audit.json
+```
+
+Кеш подключается к GBDT через `--feature-root data/features/itemstats-008`.
+Для модели на 32 шардах используется `--feature-root data/features/itemstats-032`.
+Аудит проверяет все строки кеша и раздельность источников. Для трёх кандидатов
+каждого файла все признаки независимо пересчитываются по всем исходным
+donor-шардам через Polars и Python. Полнота численной проверки ограничена
+этой выборкой.
+
+## Пользовательские статистики
+
+Группа `userstats` содержит 16 признаков `is_user_*` по тем же формулам,
+что статистики товаров. Для пользователя считаются показы, клики, сглаженный
+CTR, ожидаемые клики по позициям, сглаженное отношение кликов к ожидаемым,
+общее число событий в донорских историях и частоты типов 1–10. Счётчики
+суммируют вхождения событий в историях донорских лент. Повторяющиеся
+события учитываются при каждом вхождении.
+
+Для неизвестного пользователя используются нулевые счётчики, общий prior CTR
+и нейтральное отношение кликов 1. Alpha по умолчанию равно 20. Кеши для
+8 и 32 обучающих шардов имеют отдельные папки и списки исключений.
+Источниками служат соответственно остальные 504 и 480 train-шардов.
+
+```powershell
+uv run --locked python -m scripts.build_userstats_features --train-parts 8 --out data/features/userstats-008 --memory-mb 512 --threads 1 --resume
+uv run --locked python -m scripts.build_userstats_features --train-parts 32 --out data/features/userstats-032 --memory-mb 512 --threads 1 --resume
+uv run --locked python -m scripts.audit_userstats_features --cache data/features/userstats-008 --out runs/userstats_008_audit.json
+uv run --locked python -m scripts.audit_userstats_features --cache data/features/userstats-032 --out runs/userstats_032_audit.json
+```
+
+Группа подключается через соответствующий `--feature-root`. Проверяется
+исключение обучающих шардов из источников. Аудит сверяет ключи и числа всех
+строк, соответствие пользователя между кандидатами и историей каждой
+донорской ленты, а также независимо пересчитывает признаки для трёх
+кандидатов каждого выходного файла по всем исходным шардам.

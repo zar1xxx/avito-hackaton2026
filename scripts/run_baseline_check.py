@@ -106,6 +106,10 @@ def run(root: Path, raw: Path, output: Path, *, train_parts=1, iterations=100,
         tracked_code += ['src/common/similarity.py', 'src/common/embedding_catalogue.py']
         if feature_manifest.get('feature_group') == 'infeed':
             tracked_code.append('src/common/infeed.py')
+        if feature_manifest.get('feature_group') == 'itemstats':
+            tracked_code.append('src/common/itemstats.py')
+        if feature_manifest.get('feature_group') == 'userstats':
+            tracked_code.extend(['src/common/userstats.py','src/common/itemstats.py'])
         feature_metadata.append({'group': feature_manifest.get('feature_group', 'cosine'),
                                  'manifest_sha256': hashlib.sha256(feature_manifest_path.read_bytes()).hexdigest(),
                                  'features': feature_manifest['features'],

@@ -1,0 +1,38 @@
+{
+  "complete": true,
+  "scope": "all covered rows: keys, types, finite values, source identities and donor exclusion; independent sampled users from every donor shard",
+  "manifest_sha256": "bbe16dd5c25e40654d6cda12750354a1096a507424ac463a50e10604f878d479",
+  "excluded_train_parts": 32,
+  "donor_parts": 480,
+  "samples_per_part": 3,
+  "sampled_candidate_rows": 480,
+  "sampled_users": 446,
+  "splits": {
+    "train": {
+      "parts": 32,
+      "rows": 15373984
+    },
+    "val": {
+      "parts": 64,
+      "rows": 1389971
+    },
+    "test": {
+      "parts": 64,
+      "rows": 2904806
+    }
+  },
+  "bytes": 86074994,
+  "formula_atol": 2e-06,
+  "formula_rtol": 2e-06,
+  "donor_impressions": 231371852,
+  "donor_clicks": 5106943,
+  "prior_ctr": 0.0220724472568945,
+  "duration_seconds": 23.86,
+  "memory": {
+    "total_physical_bytes": 16890322944,
+    "available_physical_bytes": 3959304192,
+    "working_set_bytes": 142462976,
+    "peak_working_set_bytes": 323526656
+  },
+  "audit_sha256": "9d360814ad19b1db4255f0c6fde53b82c6edcdb0260488f4b89d01e70973423f"
+}
