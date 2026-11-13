@@ -1,8 +1,9 @@
 """Подбор гиперпараметров (Optuna) по val.
 
-Схема: обучение на train, early stopping по pseudo-public части val, цель — NDCG на pseudo-private.
-Так подбор не видит ту часть, по которой считается цель, но много попыток всё равно «подгоняют» под val:
-лучшую конфигурацию надо перепроверить режимом cv (run_exp --mode cv) и сравнить с базовой.
+Схема: обучение на train, early stopping и цель подбора — NDCG@30 на pseudo-public части val.
+Pseudo-private в выборе не участвует: он только записывается в trials.csv (user_attrs_priv) как
+честная оценка выбранной конфигурации. Много попыток «подгоняют» конфигурацию под pseudo-public,
+поэтому лучшую надо перепроверить режимом cv (run_exp --mode cv) и сравнить с базовой по priv.
 
     PYTHONPATH=. python -m src.gbdt.tune --data competition --out runs/tune-cb --kind catboost --trials 30
 Лучшие параметры -> <out>/best_params.json, extra_params.json; запуск: run_exp.py ... $(cat <out>/best_cli.txt)
@@ -59,20 +60,23 @@ def main(argv=None) -> None:
         m = Ranker(a.kind, feats, a.loss, a.iterations, main_p["lr"], main_p["depth"], a.seed, a.task_type, extra)
         m.fit(tr, w, es)
         trial.set_user_attr("best_iteration", m.best_iteration)
-        return mean_ndcg(ev["feed_id"].to_numpy(), ev["target"].to_numpy(), m.predict(ev), cutoff=30)
+        trial.set_user_attr("priv", mean_ndcg(ev["feed_id"].to_numpy(), ev["target"].to_numpy(), m.predict(ev),
+                                              cutoff=30))
+        return mean_ndcg(es["feed_id"].to_numpy(), es["target"].to_numpy(), m.predict(es), cutoff=30)
 
     study = optuna.create_study(direction="maximize", sampler=optuna.samplers.TPESampler(seed=a.seed))
     study.optimize(objective, n_trials=ns.trials, timeout=ns.timeout)
     best = study.best_trial
     (out / "best_params.json").write_text(json.dumps(
-        {"value": best.value, "params": best.params, "best_iteration": best.user_attrs["best_iteration"]}, indent=2))
+        {"selection": "max NDCG@30 on pseudo-public", "pub": best.value, "priv": best.user_attrs["priv"],
+         "params": best.params, "best_iteration": best.user_attrs["best_iteration"]}, indent=2))
     study.trials_dataframe().to_csv(out / "trials.csv", index=False)
     extra = {k: v for k, v in best.params.items() if k not in ("depth", "lr")}
     (out / "extra_params.json").write_text(json.dumps(extra, indent=2))
     cli = (f"--depth {best.params['depth']} --lr {best.params['lr']:.5f} "
            f"--iterations {best.user_attrs['best_iteration']} --model-params {out / 'extra_params.json'}")
     (out / "best_cli.txt").write_text(cli)
-    print("лучший priv NDCG:", round(best.value, 5), "|", best.params, "| iters:", best.user_attrs["best_iteration"])
+    print("лучший pub NDCG@30:", round(best.value, 5), "| его priv:", round(best.user_attrs["priv"], 5), "|", best.params, "| iters:", best.user_attrs["best_iteration"])
     print("запуск с лучшими параметрами: run_exp.py ... " + cli)
 
 
