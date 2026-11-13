@@ -1,0 +1,20 @@
+{
+  "complete": true,
+  "entry_point": "src.gbdt.prepared.load_prepared and src.common.similarity.attach_features",
+  "loaded_train_parts": 2,
+  "loaded_sources": [
+    "part-00000-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00016-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet"
+  ],
+  "loaded_rows": 952402,
+  "model_features": 105,
+  "requested_train_coverage_verified": 32,
+  "incompatible_8_shard_training_rejected": true,
+  "eight_shard_cache_unchanged": true,
+  "memory": {
+    "total_physical_bytes": 16890322944,
+    "available_physical_bytes": 3317133312,
+    "working_set_bytes": 447016960,
+    "peak_working_set_bytes": 544550912
+  }
+}

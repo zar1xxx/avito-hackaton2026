@@ -1,0 +1,56 @@
+{
+  "complete": true,
+  "entrypoint": "uv run --locked python -m scripts.reproduce_data --raw competition --resume --baseline-out runs/reproduced-baseline-001",
+  "dependency_resolution_in_this_run": "uv --locked --offline; all locked packages already installed",
+  "git": {
+    "commit": "22d0fd123126038af69f7c00dde1848d1dc4397d",
+    "dirty": false
+  },
+  "entrypoint_sha256": "cdfdbacad12b8ad4eac49e80bc9b2b2fb4f6855de0465e27d83eaa04195bf8e5",
+  "source_run": "runs/baseline-cosine-001",
+  "reproduced_run": "runs/reproduced-baseline-001",
+  "checks": {
+    "validation_predictions.parquet": {
+      "rows": 1389971,
+      "schema_and_all_values_equal": true,
+      "float32_score_bits_equal": true
+    },
+    "submission.parquet": {
+      "rows": 2904806,
+      "schema_and_all_values_equal": true,
+      "float32_score_bits_equal": true
+    }
+  },
+  "parameters_and_train_subset_match": true,
+  "validation": {
+    "all": {
+      "feeds": 14423,
+      "rows": 1389971,
+      "ndcg_full": 0.3576912886412575,
+      "ndcg_idcg30": 0.3578304691451923,
+      "ndcg@10": 0.22521934568300367,
+      "ndcg@30": 0.2958161622089976,
+      "reference_check": "passed"
+    },
+    "pseudo_public": {
+      "feeds": 4328,
+      "rows": 402023,
+      "ndcg_full": 0.3638050630883311,
+      "ndcg_idcg30": 0.36415723071129696,
+      "ndcg@10": 0.2322432288736922,
+      "ndcg@30": 0.30497644661239853,
+      "reference_check": "passed"
+    },
+    "pseudo_private": {
+      "feeds": 10095,
+      "rows": 987948,
+      "ndcg_full": 0.3550701478976285,
+      "ndcg_idcg30": 0.3551180150532556,
+      "ndcg@10": 0.22220801666375653,
+      "ndcg@30": 0.2918889001091541,
+      "reference_check": "passed"
+    }
+  },
+  "submission_validator": "passed",
+  "scope": "same machine, CPU=2 threads and fixed dependencies/seed; cached inputs were verified and reused"
+}

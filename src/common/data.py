@@ -19,18 +19,32 @@ FLOAT_FEATS = ["f1", "f2", "f3", "f4", "f5"]
 
 
 def list_parts(data_root: str | Path, split: str) -> list[Path]:
-    parts = sorted((Path(data_root) / split / "impressions").glob("part-*.parquet"))
+    impressions_dir = Path(data_root) / split / "impressions"
+    parts = sorted(impressions_dir.glob("part-*.parquet"))
     if not parts:
-        raise FileNotFoundError(f"нет part-*.parquet в {data_root}/{split}/impressions")
+        # Резервный поиск любых .parquet файлов в impressions, если они названы иначе
+        parts = sorted(impressions_dir.glob("*.parquet"))
+    if not parts:
+        # Резервный поиск, если parquet лежат прямо в папке split
+        parts = sorted((Path(data_root) / split).glob("*.parquet"))
+    if not parts:
+        raise FileNotFoundError(f"нет .parquet в {impressions_dir} или {Path(data_root) / split}")
     return parts
 
 
 def load_embeddings(data_root: str | Path, split: str) -> np.memmap:
+    """Таблица эмбеддингов именно этого сплита. У каждого сплита своя таблица и свои индексы
+    (item_id общий, строки таблицы — разные), поэтому подставлять таблицу другого сплита нельзя:
+    векторы получатся неверными без всякой ошибки. Нет таблицы — падаем."""
     d = Path(data_root) / split / "item_embeddings"
+    if not (d / "data.meta").exists():
+        raise FileNotFoundError(
+            f"нет {d / 'data.meta'}: у каждого сплита должна быть своя таблица эмбеддингов "
+            "(подстановка таблицы train для val/test даёт неверные векторы)")
     meta = json.loads((d / "data.meta").read_text())
     return np.memmap(
         d / "data.memmap", dtype=meta["dtype"], mode="r",
-        shape=tuple(meta["shape"]), order=meta["order"],
+        shape=tuple(meta["shape"]), order=meta.get("order", "C"),
     )
 
 
@@ -89,10 +103,15 @@ def _feed_features(row: dict, emb: np.memmap) -> dict[str, np.ndarray]:
         sim = cu @ hu.T  # (M, H_ok)
         out["cos_hist_mean"] = (cu @ hu.mean(0)) * has_emb
         out["cos_hist_max"] = sim.max(1) * has_emb
-        rec = hu[:HIST_RECENT]
-        s_rec = cu @ rec.T
-        out["cos_hist_recent_max"] = s_rec.max(1) * has_emb
-        out["cos_hist_recent_mean"] = s_rec.mean(1) * has_emb
+        recent_ok = h_ok.copy()
+        recent_ok[HIST_RECENT:] = False
+        if recent_ok.any():
+            s_rec = cu @ _unit(he[recent_ok]).T
+            out["cos_hist_recent_max"] = s_rec.max(1) * has_emb
+            out["cos_hist_recent_mean"] = s_rec.mean(1) * has_emb
+        else:
+            out["cos_hist_recent_max"] = np.zeros(m, dtype=np.float32)
+            out["cos_hist_recent_mean"] = np.zeros(m, dtype=np.float32)
     else:
         for k in ("cos_hist_mean", "cos_hist_max", "cos_hist_recent_max", "cos_hist_recent_mean"):
             out[k] = np.zeros(m, dtype=np.float32)
@@ -112,16 +131,8 @@ def _feed_features(row: dict, emb: np.memmap) -> dict[str, np.ndarray]:
 
 def _in_feed_stats(df: pl.DataFrame) -> pl.DataFrame:
     """Ранги и z-score признаков внутри ленты + размер ленты."""
-    exprs = [pl.len().over("feed_id").alias("feed_size")]
-    for c in FLOAT_FEATS + ["cos_user", "cos_hist_max"]:
-        exprs.append((pl.col(c).rank("average").over("feed_id") / pl.len().over("feed_id")).alias(f"{c}_rank"))
-        exprs.append(
-            ((pl.col(c) - pl.col(c).mean().over("feed_id")) / (pl.col(c).std().over("feed_id") + 1e-6))
-            .alias(f"{c}_z")
-        )
-    exprs.append((pl.col("category_id").count().over("feed_id", "category_id")
-                  / pl.len().over("feed_id")).alias("cat_share_feed"))
-    return df.with_columns(exprs)
+    from src.common.infeed import add_infeed_stats
+    return add_infeed_stats(df, FLOAT_FEATS + ["cos_user", "cos_hist_max"])
 
 
 def build_part(path: Path, emb: np.memmap) -> pl.DataFrame:
@@ -155,8 +166,42 @@ def iter_split(data_root: str | Path, split: str, max_parts: int | None = None) 
         yield build_part(p, emb)
 
 
-def load_split(data_root: str | Path, split: str, max_parts: int | None = None) -> pl.DataFrame:
-    return pl.concat(list(iter_split(data_root, split, max_parts)), how="vertical")
+def _build_one(args: tuple[str, str, str]) -> pl.DataFrame:
+    data_root, split, part = args
+    return build_part(Path(part), load_embeddings(data_root, split))  # memmap открывается в каждом процессе
+
+
+def load_split(data_root: str | Path, split: str, max_parts: int | None = None, n_jobs: int = 1,
+               cache_dir: str | Path | None = None) -> pl.DataFrame:
+    """Таблица кандидатов с признаками. cache_dir — кэш готовой таблицы (строить долго, читать быстро)."""
+    cache = None
+    if cache_dir is not None:
+        Path(cache_dir).mkdir(parents=True, exist_ok=True)
+        cache = Path(cache_dir) / f"{split}_parts{max_parts}.parquet"
+        if cache.exists():
+            return pl.read_parquet(cache)
+    parts = list_parts(data_root, split)[:max_parts]
+    if n_jobs > 1:
+        from concurrent.futures import ProcessPoolExecutor
+        with ProcessPoolExecutor(n_jobs) as ex:
+            frames = list(ex.map(_build_one, [(str(data_root), split, str(p)) for p in parts]))
+    else:
+        emb = load_embeddings(data_root, split)
+        frames = [build_part(p, emb) for p in parts]
+    df = pl.concat(frames, how="vertical")
+    if cache is not None:
+        df.write_parquet(cache, compression="zstd")
+    return df
+
+
+def load_labels(data_root: str | Path, split: str, max_parts: int | None = None) -> pl.DataFrame:
+    """Лёгкая таблица (feed_id, timestamp, item_id[, target]) без признаков — для ансамбля и метрик."""
+    out = []
+    for p in list_parts(data_root, split)[:max_parts]:
+        cols = pl.read_parquet_schema(p).keys()
+        take = ["feed_id", "timestamp", "item_id"] + (["target"] if "target" in cols else [])
+        out.append(pl.read_parquet(p, columns=take).explode([c for c in take if c not in ("feed_id", "timestamp")]))
+    return pl.concat(out, how="vertical")
 
 
 MODEL_FEATURES = (

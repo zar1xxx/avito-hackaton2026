@@ -1,0 +1,55 @@
+{
+  "complete": true,
+  "build_code_commit": "b3acfb9",
+  "feature_count": 32,
+  "excluded_train_sources": [
+    "part-00000-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00073-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00146-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00219-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00292-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00365-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00438-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00511-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet"
+  ],
+  "donor_parts": 504,
+  "donor_sources_sha256": "ff961bc50e9ea632b3fa9932278be6a12a1344279385e9c86ef34b088385968f",
+  "prepared_manifest_sha256": "c41fee4a3d34330e40afbbe660b27ed959f6d56028c002c6cb837cf8deae9874",
+  "implementation_sha256": "b1785668cf57123ff452c42cd62321f0cf0bd5e91a5dbea4e4b199d22bd13d26",
+  "manifest_sha256": "3de250a545b81d441549f348ff27f12e90cc2453f976200441e491e35b8f1847",
+  "smoothing": 20.0,
+  "prior_ctr": 0.022075560633944013,
+  "donor_impressions": 242895077,
+  "donor_clicks": 5362045,
+  "resume_duration_seconds": 358.36,
+  "peak_working_set_bytes": 1783881728,
+  "cache_bytes": 269062192,
+  "statistics_database_bytes": 244068352,
+  "recovery": "initial 1024 MiB / 2 threads reached memory limit during item history; resumed with 1536 MiB / 1 thread",
+  "coverage": {
+    "train": {
+      "rows": 3850759,
+      "item_with_impressions": 3588870,
+      "item_with_history": 3333477,
+      "category_with_impressions": 3850759,
+      "item_impression_coverage": 0.9319902907452791,
+      "item_history_coverage": 0.865667521649628
+    },
+    "val": {
+      "rows": 1389971,
+      "item_with_impressions": 907835,
+      "item_with_history": 814575,
+      "category_with_impressions": 1389971,
+      "item_impression_coverage": 0.6531323315378522,
+      "item_history_coverage": 0.5860374065358198
+    },
+    "test": {
+      "rows": 2904806,
+      "item_with_impressions": 1560034,
+      "item_with_history": 1492026,
+      "category_with_impressions": 2904806,
+      "item_impression_coverage": 0.5370527326093377,
+      "item_history_coverage": 0.5136404978508031
+    }
+  }
+}

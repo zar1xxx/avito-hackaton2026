@@ -1,0 +1,265 @@
+{
+  "complete": true,
+  "entity": "category",
+  "train_parts": [
+    "part-00000-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00016-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00032-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00049-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00065-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00082-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00098-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00115-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00131-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00148-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00164-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00181-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00197-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00214-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00230-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00247-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00263-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00280-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00296-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00313-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00329-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00346-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00362-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00379-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00395-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00412-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00428-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00445-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00461-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00478-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00494-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet",
+    "part-00511-e3428b2d-e8b5-4109-8f1d-0bb6189ed749-c000.zstd.parquet"
+  ],
+  "history_manifest_sha256": "7bd21061caaff33059d6fc15cd6192001967886aabe967af51cf6b3cbfebedc7",
+  "prepared_manifest_sha256": "c41fee4a3d34330e40afbbe660b27ed959f6d56028c002c6cb837cf8deae9874",
+  "condition": "h_cat_evtN > 0; each candidate occurrence counted once per event type",
+  "interpretation": "descriptive association; event groups overlap; category mix, history length and train position affect rates",
+  "splits": {
+    "train": {
+      "baseline": {
+        "rows": 15373984,
+        "positives": 339929,
+        "feeds": 196954,
+        "target_rate": 0.02211066435349484
+      },
+      "events": [
+        {
+          "event_type": 1,
+          "rows": 12440586,
+          "positives": 312615,
+          "feeds": 191182,
+          "target_rate": 0.02512863943868882,
+          "candidate_share": 0.8091972776867726,
+          "rate_ratio_to_baseline": 1.136494093390593,
+          "absent_target_rate": 0.00931138563536213
+        },
+        {
+          "event_type": 2,
+          "rows": 7810232,
+          "positives": 196207,
+          "feeds": 166204,
+          "target_rate": 0.02512178895582103,
+          "candidate_share": 0.5080161394730215,
+          "rate_ratio_to_baseline": 1.1361842662972832,
+          "absent_target_rate": 0.01900141622834805
+        },
+        {
+          "event_type": 3,
+          "rows": 8340537,
+          "positives": 213216,
+          "feeds": 178550,
+          "target_rate": 0.02556382161004741,
+          "candidate_share": 0.5425098009728643,
+          "rate_ratio_to_baseline": 1.1561760968076367,
+          "absent_target_rate": 0.018015775195291867
+        },
+        {
+          "event_type": 4,
+          "rows": 5804366,
+          "positives": 149305,
+          "feeds": 147511,
+          "target_rate": 0.025722878260950464,
+          "candidate_share": 0.3775446884815283,
+          "rate_ratio_to_baseline": 1.1633697590314456,
+          "absent_target_rate": 0.019919708393793777
+        },
+        {
+          "event_type": 5,
+          "rows": 4363503,
+          "positives": 110345,
+          "feeds": 117388,
+          "target_rate": 0.02528816870298932,
+          "candidate_share": 0.28382382861852856,
+          "rate_ratio_to_baseline": 1.1437091305215459,
+          "absent_target_rate": 0.020851405129349028
+        },
+        {
+          "event_type": 6,
+          "rows": 3973078,
+          "positives": 100545,
+          "feeds": 108388,
+          "target_rate": 0.025306575909156578,
+          "candidate_share": 0.2584286545374315,
+          "rate_ratio_to_baseline": 1.1445416340534602,
+          "absent_target_rate": 0.020996927788019655
+        },
+        {
+          "event_type": 7,
+          "rows": 4073165,
+          "positives": 98769,
+          "feeds": 121067,
+          "target_rate": 0.024248710769143898,
+          "candidate_share": 0.2649388083140974,
+          "rate_ratio_to_baseline": 1.0966975203217317,
+          "absent_target_rate": 0.021340046239126564
+        },
+        {
+          "event_type": 8,
+          "rows": 3277199,
+          "positives": 81998,
+          "feeds": 94776,
+          "target_rate": 0.02502075705503389,
+          "candidate_share": 0.21316524070793882,
+          "rate_ratio_to_baseline": 1.1316148920273883,
+          "absent_target_rate": 0.021322276952099255
+        },
+        {
+          "event_type": 9,
+          "rows": 1902979,
+          "positives": 45835,
+          "feeds": 73595,
+          "target_rate": 0.0240859200232898,
+          "candidate_share": 0.12377917135857563,
+          "rate_ratio_to_baseline": 1.089334976019513,
+          "absent_target_rate": 0.02183163023100355
+        },
+        {
+          "event_type": 10,
+          "rows": 484860,
+          "positives": 14329,
+          "feeds": 9991,
+          "target_rate": 0.029552860619560285,
+          "candidate_share": 0.03153769380792903,
+          "rate_ratio_to_baseline": 1.336588541487634,
+          "absent_target_rate": 0.021868311392933527
+        }
+      ]
+    },
+    "val": {
+      "baseline": {
+        "rows": 1389971,
+        "positives": 21983,
+        "feeds": 14423,
+        "target_rate": 0.01581543787604202
+      },
+      "events": [
+        {
+          "event_type": 1,
+          "rows": 1073579,
+          "positives": 19471,
+          "feeds": 13984,
+          "target_rate": 0.018136532104297866,
+          "candidate_share": 0.7723751071065511,
+          "rate_ratio_to_baseline": 1.1467613003476782,
+          "absent_target_rate": 0.007939518066196364
+        },
+        {
+          "event_type": 2,
+          "rows": 702388,
+          "positives": 12380,
+          "feeds": 12233,
+          "target_rate": 0.017625585858528334,
+          "candidate_share": 0.5053256506790429,
+          "rate_ratio_to_baseline": 1.1144544967185774,
+          "absent_target_rate": 0.01396631388501461
+        },
+        {
+          "event_type": 3,
+          "rows": 722504,
+          "positives": 12921,
+          "feeds": 13064,
+          "target_rate": 0.01788363801446082,
+          "candidate_share": 0.5197978950639978,
+          "rate_ratio_to_baseline": 1.1307709691397043,
+          "absent_target_rate": 0.01357670117024512
+        },
+        {
+          "event_type": 4,
+          "rows": 533571,
+          "positives": 9574,
+          "feeds": 11082,
+          "target_rate": 0.017943254037419577,
+          "candidate_share": 0.383872037618051,
+          "rate_ratio_to_baseline": 1.1345404520605071,
+          "absent_target_rate": 0.014489724427837459
+        },
+        {
+          "event_type": 5,
+          "rows": 391695,
+          "positives": 7089,
+          "feeds": 9047,
+          "target_rate": 0.018098265231876843,
+          "candidate_share": 0.2818008433269471,
+          "rate_ratio_to_baseline": 1.144341710531642,
+          "absent_target_rate": 0.014919721600038465
+        },
+        {
+          "event_type": 6,
+          "rows": 358831,
+          "positives": 6518,
+          "feeds": 8463,
+          "target_rate": 0.018164539853022733,
+          "candidate_share": 0.25815718457435444,
+          "rate_ratio_to_baseline": 1.1485322123479897,
+          "absent_target_rate": 0.014997963419128343
+        },
+        {
+          "event_type": 7,
+          "rows": 385962,
+          "positives": 6409,
+          "feeds": 9359,
+          "target_rate": 0.016605261657883418,
+          "candidate_share": 0.27767629684360323,
+          "rate_ratio_to_baseline": 1.049940051488417,
+          "absent_target_rate": 0.015511813141117261
+        },
+        {
+          "event_type": 8,
+          "rows": 299119,
+          "positives": 5395,
+          "feeds": 7426,
+          "target_rate": 0.018036299934139924,
+          "candidate_share": 0.2151980149226135,
+          "rate_ratio_to_baseline": 1.1404236844723834,
+          "absent_target_rate": 0.01520646247153601
+        },
+        {
+          "event_type": 9,
+          "rows": 185397,
+          "positives": 3051,
+          "feeds": 5894,
+          "target_rate": 0.01645657696726484,
+          "candidate_share": 0.1333819194788956,
+          "rate_ratio_to_baseline": 1.0405388138000309,
+          "absent_target_rate": 0.015716759617923015
+        },
+        {
+          "event_type": 10,
+          "rows": 51338,
+          "positives": 1135,
+          "feeds": 954,
+          "target_rate": 0.022108379757684368,
+          "candidate_share": 0.036934583527282225,
+          "rate_ratio_to_baseline": 1.3978986817162489,
+          "absent_target_rate": 0.01557409685851163
+        }
+      ]
+    }
+  },
+  "analysis_sha256": "d124ab3c3810d19d7a526769607762335a64451001ab099a9d94c2ce524e9ab2"
+}

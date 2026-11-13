@@ -1,0 +1,519 @@
+"""Скрипт обучения продвинутой нейросетевой модели ранжирования рекомендаций Avito.
+
+Включает:
+- History Transformer Encoder + Candidate-to-History Cross-Attention
+- Positional Debias: обучение с головой позиции на train, отключение на val/test
+- ListNet ranking loss с температурой
+- EarlyStopping и ReduceLROnPlateau scheduler
+- Оценку валидационного NDCG по чистым контентным скорам
+"""
+from __future__ import annotations
+
+import argparse
+import contextlib
+import math
+import os
+import random
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+
+from src.common.cv import mask_feeds, pseudo_split
+from src.common.metric import all_variants, mean_ndcg
+from src.nn.dataset import NUM_CAND_FEATS, FeedRankingDataset, collate_ranking_batch
+from src.nn.model import FeedRankingModel
+
+
+def seed_everything(seed: int) -> None:
+    """Фиксирует все генераторы случайных чисел для воспроизводимости."""
+    random.seed(seed)
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+
+def apply_in_feed_mixup(batch: dict[str, torch.Tensor], alpha: float) -> dict[str, torch.Tensor]:
+    """Применяет внутрилентовый MixUp для эмбеддингов кандидатов, признаков и таргетов."""
+    if alpha <= 0.0:
+        return batch
+
+    cand_mask = batch["candidate_mask"]
+    b, _ = cand_mask.shape
+
+    cand_emb = batch["cand_emb"].clone()
+    cand_feats = batch["cand_features"].clone()
+    target = batch["target"].clone()
+    has_emb = batch["cand_has_emb_mask"].clone()
+
+    lam = float(np.random.beta(alpha, alpha))
+    lam = max(lam, 1.0 - lam)  # сохраняем основной идентификатор кандидата (lam >= 0.5)
+
+    for i in range(b):
+        m_i = int(cand_mask[i].sum().item())
+        if m_i <= 1:
+            continue
+        perm = torch.randperm(m_i, device=cand_emb.device)
+        cand_emb[i, :m_i] = lam * cand_emb[i, :m_i] + (1.0 - lam) * cand_emb[i, perm]
+        cand_feats[i, :m_i] = lam * cand_feats[i, :m_i] + (1.0 - lam) * cand_feats[i, perm]
+        target[i, :m_i] = lam * target[i, :m_i] + (1.0 - lam) * target[i, perm]
+        has_emb[i, :m_i] = has_emb[i, :m_i] | has_emb[i, perm]
+
+    batch["cand_emb"] = cand_emb
+    batch["cand_features"] = cand_feats
+    batch["target"] = target
+    batch["cand_has_emb_mask"] = has_emb
+    return batch
+
+
+def get_amp_tools(use_amp: bool):
+    """Возвращает (autocast_factory, GradScaler) с поддержкой PyTorch 2.x и CPU fallback."""
+    if not use_amp:
+        return lambda: contextlib.nullcontext(), None
+
+    if hasattr(torch, "amp") and hasattr(torch.amp, "GradScaler"):
+        return (
+            lambda: torch.amp.autocast("cuda", enabled=True),
+            torch.amp.GradScaler("cuda", enabled=True),
+        )
+    return (
+        lambda: torch.cuda.amp.autocast(enabled=True),
+        torch.cuda.amp.GradScaler(enabled=True),
+    )
+
+
+def build_cosine_warmup_scheduler(
+    optimizer: torch.optim.Optimizer,
+    total_steps: int,
+    warmup_steps: int,
+    min_lr: float,
+    base_lr: float,
+) -> torch.optim.lr_scheduler.LambdaLR:
+    """Линейный прогрев (Warmup) + плавное Cosine Annealing затухание LR по шагам."""
+    min_ratio = min_lr / max(base_lr, 1e-12)
+
+    def lr_lambda(step: int) -> float:
+        if warmup_steps > 0 and step < warmup_steps:
+            # Начинаем с 0.05 * lr и линейно растем до 1.0 * lr
+            return 0.05 + 0.95 * (float(step + 1) / float(warmup_steps))
+        progress = float(step - warmup_steps) / float(max(total_steps - warmup_steps, 1))
+        progress = min(max(progress, 0.0), 1.0)
+        cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+        return min_ratio + (1.0 - min_ratio) * cosine
+
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+
+def listnet_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    mask: torch.Tensor,
+    logit_temperature: float = 1.0,
+    target_temperature: float = 1.0,
+) -> torch.Tensor:
+    """ListNet ranking loss с Temperature Scaling и маскированием паддингов (считается в float32)."""
+    scaled_logits = logits.float() / max(logit_temperature, 1e-5)
+    masked_logits = scaled_logits.masked_fill(~mask, -1e9)
+    pred_log_probs = F.log_softmax(masked_logits, dim=-1)
+
+    scaled_targets = (targets.float() * 3.0) / max(target_temperature, 1e-5)
+    masked_targets = scaled_targets.masked_fill(~mask, -1e9)
+    true_probs = F.softmax(masked_targets, dim=-1)
+
+    feed_loss = -(true_probs * pred_log_probs).sum(dim=-1)
+
+    has_candidates = mask.any(dim=-1)
+    if has_candidates.any():
+        return feed_loss[has_candidates].mean()
+    return logits.sum().float() * 0.0
+
+
+def masked_bce_loss(logits: torch.Tensor, targets: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    """Binary Cross Entropy с маскированием паддингов (в float32 для стабильности AMP)."""
+    bce = F.binary_cross_entropy_with_logits(logits.float(), targets.float(), reduction="none")
+    mask_f = mask.float()
+    return (bce * mask_f).sum() / torch.clamp(mask_f.sum(), min=1.0)
+
+
+@torch.no_grad()
+def evaluate_ndcg(
+    model: nn.Module,
+    val_loader: DataLoader,
+    device: torch.device,
+    cv_mode: str = "danya",
+    use_amp: bool = False,
+) -> dict[str, float]:
+    """Считает метрики NDCG по валидационному датасету (включая pseudo-public/private)."""
+    model.eval()
+    autocast_ctx, _ = get_amp_tools(use_amp)
+    all_feed_ids = []
+    all_targets = []
+    all_scores = []
+    all_timestamps = []
+
+    for batch in val_loader:
+        for k, v in batch.items():
+            if isinstance(v, torch.Tensor):
+                batch[k] = v.to(device, non_blocking=True)
+
+        with autocast_ctx():
+            _, main_scores = model(batch, use_pos_bias=False)
+        mask = batch["candidate_mask"]
+
+        if "target" not in batch or batch["target"] is None:
+            continue
+
+        b, m = mask.shape
+        feed_ids_expanded = batch["feed_id"].unsqueeze(1).expand(b, m)
+        ts_tensor = batch.get("timestamp")
+        if ts_tensor is None:
+            ts_tensor = torch.zeros(b, dtype=torch.long, device=device)
+        ts_expanded = ts_tensor.unsqueeze(1).expand(b, m)
+
+        val_cand_mask = mask.cpu().numpy()
+        feed_ids = feed_ids_expanded.cpu().numpy()[val_cand_mask]
+        targets = batch["target"].cpu().numpy()[val_cand_mask]
+        scores = main_scores.cpu().numpy()[val_cand_mask]
+        timestamps = ts_expanded.cpu().numpy()[val_cand_mask]
+
+        all_feed_ids.append(feed_ids)
+        all_targets.append(targets)
+        all_scores.append(scores)
+        all_timestamps.append(timestamps)
+
+    if not all_feed_ids:
+        return {
+            "ndcg_full": 0.0,
+            "ndcg_idcg30": 0.0,
+            "ndcg@30": 0.0,
+            "ndcg_public": 0.0,
+            "ndcg_private": 0.0,
+        }
+
+    feed_ids_cat = np.concatenate(all_feed_ids)
+    targets_cat = np.concatenate(all_targets)
+    scores_cat = np.concatenate(all_scores)
+    ts_cat = np.concatenate(all_timestamps)
+
+    res = all_variants(feed_ids_cat, targets_cat, scores_cat)
+
+    if cv_mode == "danya" and len(np.unique(feed_ids_cat)) >= 2 and len(np.unique(ts_cat)) >= 2:
+        pub_feeds, priv_feeds = pseudo_split(feed_ids_cat, ts_cat, frac=0.3)
+        m_pub = mask_feeds(feed_ids_cat, pub_feeds)
+        m_priv = mask_feeds(feed_ids_cat, priv_feeds)
+        res["ndcg_public"] = (
+            mean_ndcg(feed_ids_cat[m_pub], targets_cat[m_pub], scores_cat[m_pub])
+            if m_pub.any()
+            else res["ndcg_full"]
+        )
+        res["ndcg_private"] = (
+            mean_ndcg(feed_ids_cat[m_priv], targets_cat[m_priv], scores_cat[m_priv])
+            if m_priv.any()
+            else res["ndcg_full"]
+        )
+    else:
+        res["ndcg_public"] = res["ndcg_full"]
+        res["ndcg_private"] = res["ndcg_full"]
+
+    return res
+
+
+def train(args: argparse.Namespace) -> float:
+    seed = getattr(args, "seed", 42)
+    seed_everything(seed)
+
+    device = torch.device(args.device if args.device else ("cuda" if torch.cuda.is_available() else "cpu"))
+    mixup_alpha = getattr(args, "mixup_alpha", 0.0)
+    temperature = getattr(args, "temperature", 1.0)
+    use_set_attention = getattr(args, "use_set_attention", True)
+    cv_mode = getattr(args, "cv_mode", "danya")
+    scheduler_type = getattr(args, "scheduler", "plateau")
+    warmup_epochs = getattr(args, "warmup_epochs", 0)
+    min_lr = getattr(args, "min_lr", 1e-6)
+    amp_requested = getattr(args, "amp", False)
+    use_amp = bool(amp_requested and device.type == "cuda")
+
+    print("=" * 75)
+    print(f"Запуск обучения: {args.data} | Device: {device} | AMP: {'ON' if use_amp else 'OFF'} | Loss: {args.loss} (T={temperature}) | Seed: {seed}")
+    if amp_requested and not use_amp:
+        print("[INFO] Флаг --amp передан, но GPU недоступен (CPU режим) — AMP отключен.")
+    print(f"Сплиты: train='{args.train_split}', val='{args.val_split}' | CV: {cv_mode} | Scheduler: {scheduler_type} (warmup={warmup_epochs}ep)")
+    print(f"Debias: {'ВКЛ' if args.use_pos_bias else 'ВЫКЛ'} | Set-Attention: {'ВКЛ' if use_set_attention else 'ВЫКЛ'} | MixUp: {mixup_alpha} | Patience: {args.patience}")
+    print("=" * 75)
+
+    # 1. Загрузка данных
+    train_dataset = FeedRankingDataset(
+        data_root=args.data,
+        split=args.train_split,
+        max_parts=args.max_parts,
+        max_feeds=args.max_feeds,
+        max_hist_len=args.max_hist_len,
+    )
+    val_dataset = FeedRankingDataset(
+        data_root=args.data,
+        split=args.val_split,
+        max_parts=args.max_parts,
+        max_feeds=args.max_feeds // 3 if args.max_feeds else None,
+        max_hist_len=args.max_hist_len,
+    )
+
+    print(f"Train лент: {len(train_dataset)}, Val лент: {len(val_dataset)}")
+
+    dl_generator = torch.Generator()
+    dl_generator.manual_seed(seed)
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        generator=dl_generator,
+        collate_fn=collate_ranking_batch,
+        num_workers=args.num_workers,
+        pin_memory=(device.type == "cuda"),
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        collate_fn=collate_ranking_batch,
+        num_workers=args.num_workers,
+        pin_memory=(device.type == "cuda"),
+    )
+
+    # Конфиг модели для сохранения в чекпоинт
+    model_config = {
+        "emb_dim": 128,
+        "d_model": args.hidden_dim,
+        "nhead": args.nhead,
+        "num_categories": args.num_categories,
+        "num_cand_feats": NUM_CAND_FEATS,
+        "max_hist_len": args.max_hist_len,
+        "dropout": args.dropout,
+        "use_set_attention": use_set_attention,
+    }
+
+    # 2. Инициализация продвинутой модели
+    model = FeedRankingModel(**model_config).to(device)
+
+    total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Параметров модели: {total_params:,} (входных числовых фичей: {NUM_CAND_FEATS})")
+
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    if scheduler_type == "cosine":
+        total_steps = args.epochs * max(len(train_loader), 1)
+        warmup_steps = max(warmup_epochs, 0) * max(len(train_loader), 1)
+        scheduler = build_cosine_warmup_scheduler(
+            optimizer=optimizer,
+            total_steps=total_steps,
+            warmup_steps=warmup_steps,
+            min_lr=min_lr,
+            base_lr=args.lr,
+        )
+    else:
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode="max",
+            factor=0.5,
+            patience=args.lr_patience,
+            min_lr=min_lr,
+        )
+
+    autocast_ctx, scaler = get_amp_tools(use_amp)
+
+    # 3. Начальная оценка до обучения
+    init_metrics = evaluate_ndcg(model, val_loader, device, cv_mode=cv_mode, use_amp=use_amp)
+    init_target = init_metrics["ndcg_public"] if cv_mode == "danya" else init_metrics["ndcg_full"]
+    print(
+        f"Initial Val NDCG (без обучения): priv={init_metrics['ndcg_private']:.4f} | "
+        f"pub={init_metrics['ndcg_public']:.4f} | full={init_metrics['ndcg_full']:.4f} | @30={init_metrics['ndcg@30']:.4f}"
+    )
+
+    best_ndcg = -1.0
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Инициализация файла истории метрик
+    history_file = out_dir / "history.csv"
+    with open(history_file, "w", encoding="utf-8") as f:
+        f.write("epoch,train_loss,val_ndcg_full,val_ndcg_public,val_ndcg_private,val_ndcg_idcg30,val_ndcg_at30,lr,epoch_time_sec,best_ndcg\n")
+        f.write(
+            f"0,NaN,{init_metrics['ndcg_full']:.5f},{init_metrics['ndcg_public']:.5f},"
+            f"{init_metrics['ndcg_private']:.5f},{init_metrics['ndcg_idcg30']:.5f},"
+            f"{init_metrics['ndcg@30']:.5f},{optimizer.param_groups[0]['lr']:.2e},0.0,{init_target:.5f}\n"
+        )
+
+    # 4. Цикл обучения с EarlyStopping
+    global_step = 0
+    patience_counter = 0
+    total_start = time.perf_counter()
+
+    for epoch in range(1, args.epochs + 1):
+        model.train()
+        epoch_losses = []
+        epoch_start = time.perf_counter()
+
+        for batch_idx, batch in enumerate(train_loader):
+            for k, v in batch.items():
+                if isinstance(v, torch.Tensor):
+                    batch[k] = v.to(device, non_blocking=True)
+
+            if mixup_alpha > 0.0:
+                batch = apply_in_feed_mixup(batch, mixup_alpha)
+
+            optimizer.zero_grad()
+
+            with autocast_ctx():
+                total_scores, _ = model(batch, use_pos_bias=args.use_pos_bias)
+                cand_mask = batch["candidate_mask"]
+                target = batch["target"]
+
+                if args.loss == "listnet":
+                    loss = listnet_loss(total_scores, target, cand_mask, logit_temperature=temperature)
+                else:
+                    loss = masked_bce_loss(total_scores, target, cand_mask)
+
+            if use_amp and scaler is not None:
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                optimizer.step()
+
+            if scheduler_type == "cosine":
+                scheduler.step()
+
+            loss_val = loss.item()
+            epoch_losses.append(loss_val)
+            global_step += 1
+
+            if global_step % args.log_every == 0 or (batch_idx + 1) == len(train_loader):
+                cur_lr = optimizer.param_groups[0]["lr"]
+                print(
+                    f"Epoch [{epoch:2d}/{args.epochs}] | Step {batch_idx + 1:3d}/{len(train_loader)} | "
+                    f"Train Loss: {loss_val:.4f} (avg: {np.mean(epoch_losses):.4f}) | lr: {cur_lr:.2e}"
+                )
+
+        epoch_duration = time.perf_counter() - epoch_start
+        train_throughput = len(train_dataset) / max(epoch_duration, 1e-6)
+
+        # Валидация после эпохи
+        val_metrics = evaluate_ndcg(model, val_loader, device, cv_mode=cv_mode, use_amp=use_amp)
+        cur_ndcg = val_metrics["ndcg_public"] if cv_mode == "danya" else val_metrics["ndcg_full"]
+
+        # Шаг шедулера ReduceLROnPlateau (для cosine шаг делается по батчам)
+        if scheduler_type == "plateau":
+            scheduler.step(cur_ndcg)
+        cur_lr = optimizer.param_groups[0]["lr"]
+
+        is_best = cur_ndcg > best_ndcg
+        if is_best:
+            best_ndcg = cur_ndcg
+            patience_counter = 0
+        else:
+            patience_counter += 1
+
+        ckpt_data = {
+            "epoch": epoch,
+            "model_config": model_config,
+            "model_state": model.state_dict(),
+            "optimizer_state": optimizer.state_dict(),
+            "best_ndcg": best_ndcg,
+            "val_ndcg": cur_ndcg,
+            "metrics": val_metrics,
+            "args": vars(args),
+        }
+        torch.save(ckpt_data, out_dir / "last_model.pt")
+        if is_best:
+            torch.save(ckpt_data, out_dir / "best_model.pt")
+
+        # Запись эпохи в history.csv
+        avg_train_loss = float(np.mean(epoch_losses)) if epoch_losses else 0.0
+        with open(history_file, "a", encoding="utf-8") as f:
+            f.write(
+                f"{epoch},{avg_train_loss:.5f},{val_metrics['ndcg_full']:.5f},"
+                f"{val_metrics['ndcg_public']:.5f},{val_metrics['ndcg_private']:.5f},"
+                f"{val_metrics['ndcg_idcg30']:.5f},{val_metrics['ndcg@30']:.5f},"
+                f"{cur_lr:.2e},{epoch_duration:.2f},{best_ndcg:.5f}\n"
+            )
+
+        print("-" * 75)
+        print(
+            f"--> Эпоха {epoch} ({epoch_duration:.2f}с, {train_throughput:.1f} л/с) | "
+            f"Val NDCG: priv={val_metrics['ndcg_private']:.4f} | pub={val_metrics['ndcg_public']:.4f} | "
+            f"full={val_metrics['ndcg_full']:.4f} | @30={val_metrics['ndcg@30']:.4f} "
+            f"{'(* NEW BEST *)' if is_best else f'(patience: {patience_counter}/{args.patience})'}"
+        )
+        print("-" * 75)
+
+        # Early Stopping
+        if patience_counter >= args.patience:
+            print(f"\n[EarlyStopping] {'pseudo-public ' if cv_mode == 'danya' else ''}NDCG не улучшался {args.patience} эпох. Остановка обучения!")
+            break
+
+    total_time = time.perf_counter() - total_start
+    metric_label = "pseudo-public (выбор чекпоинта); pseudo-private только для отчёта" if cv_mode == "danya" else "full"
+    print(f"\n[DONE] Обучение завершено за {total_time:.2f}с. Лучший Val NDCG ({metric_label}): {best_ndcg:.4f}")
+    print(f"Чекпоинт сохранен в: {out_dir / 'best_model.pt'}")
+    return best_ndcg
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Обучение продвинутой нейросети ранжирования Avito")
+    parser.add_argument("--data", default="data/synth", help="Путь к корню данных")
+    parser.add_argument("--train-split", default="train", help="Имя сплита для train")
+    parser.add_argument("--val-split", default="val", help="Имя сплита для val")
+    parser.add_argument("--out", default="models/nn/run_prod", help="Папка чекпоинта")
+    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--min-lr", type=float, default=1e-6, help="Минимальный LR для шедулера")
+    parser.add_argument("--scheduler", choices=["plateau", "cosine"], default="plateau", help="Тип LR шедулера")
+    parser.add_argument("--warmup-epochs", type=int, default=0, help="Число эпох линейного прогрева (для cosine)")
+    parser.add_argument("--lr-patience", type=int, default=2, help="Patience для ReduceLROnPlateau")
+    parser.add_argument("--patience", type=int, default=3, help="Early stopping patience")
+    parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--dropout", type=float, default=0.15)
+    parser.add_argument("--hidden-dim", type=int, default=128)
+    parser.add_argument("--nhead", type=int, default=4)
+    parser.add_argument("--num-categories", type=int, default=1000)
+    parser.add_argument("--max-hist-len", type=int, default=256)
+    parser.add_argument("--max-parts", type=int, default=None, help="Ограничить количество читаемых партов (для быстрого дебага)")
+    parser.add_argument("--max-feeds", type=int, default=None, help="Ограничить общее количество читаемых лент (защита от OOM)")
+    parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument("--loss", choices=["listnet", "bce"], default="listnet")
+    parser.add_argument("--mixup-alpha", type=float, default=0.0, help="Beta(alpha, alpha) MixUp для эмбеддингов кандидатов (0 = выкл)")
+    parser.add_argument("--temperature", type=float, default=1.0, help="Температура логитов в ListNet")
+    parser.add_argument("--use-pos-bias", action="store_true", default=True, help="Включить голову debias для pos на train")
+    parser.add_argument("--no-pos-bias", dest="use_pos_bias", action="store_false")
+    parser.add_argument("--use_set_attention", "--use-set-attention", dest="use_set_attention", action="store_true", default=True, help="Включить Self-Attention между кандидатами ленты")
+    parser.add_argument("--no_set_attention", "--no-set-attention", dest="use_set_attention", action="store_false", help="Отключить Set-Attention (для сравнения с baseline)")
+    parser.add_argument("--log-every", type=int, default=5)
+    parser.add_argument("--cv-mode", choices=["danya", "simple"], default="danya", help="Режим валидации: 'danya' (pseudo-public 30% / pseudo-private 70% по timestamp) или 'simple'")
+    parser.add_argument("--seed", type=int, default=42, help="Seed для воспроизводимости")
+    parser.add_argument("--amp", action="store_true", default=False, help="Использовать Automatic Mixed Precision (только на GPU)")
+    parser.add_argument("--device", default=None)
+    args = parser.parse_args()
+
+    train(args)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,17 @@
+{
+  "complete": true,
+  "train_parts": 2,
+  "candidates": 958087,
+  "prefetch_seconds": 8.655999999999949,
+  "duration_seconds": 18.17100000000005,
+  "retained_vector_bytes": 153575936,
+  "float32_bits_match_existing_cache": true,
+  "value_signature": "2677b517a4025814566c7f53d30f525692f2582aed7149bebaee0c505f0818b7",
+  "memory": {
+    "total_physical_bytes": 16890322944,
+    "available_physical_bytes": 4734631936,
+    "working_set_bytes": 403570688,
+    "peak_working_set_bytes": 407404544
+  },
+  "implementation_sha256": "65483578988288d629acc38e5e632ba8bfe3aa4cd91c524dfc8be233f44e5396"
+}

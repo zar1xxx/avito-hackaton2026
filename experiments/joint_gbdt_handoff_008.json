@@ -1,0 +1,44 @@
+{
+  "complete": true,
+  "selection": "105-feature run also has higher pseudo-Public NDCG@30",
+  "shared_code_hashes_equal": true,
+  "shared_feature_metadata_equal": true,
+  "runs": {
+    "baseline-joint-008-retry-001": {
+      "model_features": 105,
+      "git": {
+        "commit": "055f6444417648caf72e2f8231ebc3aea775e47d",
+        "dirty": false
+      },
+      "model_sha256": "1fbf477d927e7f939e641f6a7ffe5ac0c616585904b441b679759c3df7be0bdc",
+      "predictions": {
+        "val_pred.parquet": {
+          "rows": 1389971,
+          "sha256": "4c70adb981f7b574e799d1bc214247bab87ae72505872c2fb2714137cb1df55e"
+        },
+        "test_pred.parquet": {
+          "rows": 2904806,
+          "sha256": "f8d2aee55ddb6f7879baf1d62a57fab208fee78b5c8905a7766f6a7e8843bc3c"
+        }
+      }
+    },
+    "baseline-joint-userstats-008-retry-001": {
+      "model_features": 121,
+      "git": {
+        "commit": "1a2e2417d5d1efe7b5d84219625d87a074883217",
+        "dirty": false
+      },
+      "model_sha256": "8b60a060c043b0d176e75bf0afcf809280f9b95f5c00f62962c489d01433540e",
+      "predictions": {
+        "val_pred.parquet": {
+          "rows": 1389971,
+          "sha256": "06ac83d20768f73c2d72ff1aa306a70912e4e4134007900d5ca39825fb0f4714"
+        },
+        "test_pred.parquet": {
+          "rows": 2904806,
+          "sha256": "939abd51739ee4212711427346b1d45b321971d01c3e7dc786f731dbbf65eb3d"
+        }
+      }
+    }
+  }
+}

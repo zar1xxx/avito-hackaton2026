@@ -21,6 +21,25 @@ def validate(template_path: str, sub_path: str) -> list[str]:
     for c, t in want.items():
         if sub.schema[c] != t:
             errors.append(f"тип {c}: {sub.schema[c]}, нужен {t}")
+    if sub.null_count().to_numpy().any():
+        errors.append("есть null в feed_id, item_id или score")
+    # Не передаём несовместимые типы в join и np.isfinite.
+    if errors:
+        return errors
+    if not tpl.height:
+        errors.append("шаблон пуст")
+    if not {"feed_id", "item_id"}.issubset(tpl.columns):
+        errors.append("в шаблоне нет feed_id или item_id")
+        return errors
+    if tpl.select("feed_id", "item_id").null_count().to_numpy().any():
+        errors.append("есть null в ключах шаблона")
+    if tpl.select("feed_id", "item_id").is_duplicated().any():
+        errors.append("есть дубликаты пар в шаблоне")
+    for c in ("feed_id", "item_id"):
+        if tpl.schema[c] != want[c]:
+            errors.append(f"тип {c} в шаблоне: {tpl.schema[c]}, нужен {want[c]}")
+    if errors:
+        return errors
     if sub.height != tpl.height:
         errors.append(f"строк {sub.height}, в шаблоне {tpl.height}")
     if sub.select("feed_id", "item_id").is_duplicated().any():

@@ -1,0 +1,49 @@
+{
+  "complete": true,
+  "feature_group": "infeed",
+  "features": [
+    "feed_size",
+    "cat_share_feed",
+    "f1_rank",
+    "f1_z",
+    "f2_rank",
+    "f2_z",
+    "f3_rank",
+    "f3_z",
+    "f4_rank",
+    "f4_z",
+    "f5_rank",
+    "f5_z"
+  ],
+  "normalization": {
+    "rank": "ascending average rank divided by feed size",
+    "z": "population std (ddof=0), constant/singleton feeds -> 0"
+  },
+  "coverage": {
+    "train": {
+      "parts": 512,
+      "rows": 246745836
+    },
+    "val": {
+      "parts": 64,
+      "rows": 1389971
+    },
+    "test": {
+      "parts": 64,
+      "rows": 2904806
+    }
+  },
+  "total_candidates": 251040613,
+  "parquet_bytes": 7576648200,
+  "independently_checked_real_feeds": 22,
+  "all_output_row_counts_schemas_fingerprints": "passed",
+  "all_values_finite_and_occurrence_keys_unique": "validated by builder for every shard",
+  "manifest_sha256": "c663b47905ae31db7027a961ffcc70cf89d161127c88695f90584e44f75dac87",
+  "implementation_sha256": "12d1c4c02ba7d6743b2f6b557a15dba2a0ea3f58eab4ad641af2c95ef3a9df1d",
+  "independent_check_tolerance": {
+    "rank_relative": 1e-06,
+    "category_share_relative": 1e-06,
+    "z_absolute": 0.002,
+    "z_relative": 0.0001
+  }
+}
