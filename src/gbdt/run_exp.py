@@ -167,6 +167,11 @@ def run(a: argparse.Namespace) -> dict:
         score = model.predict(va)
         res.update(split_metrics(va, score, pub, priv))
         res["best_iteration"] = model.best_iteration
+        try:
+            res["feature_importance"] = model.importance()
+            model.save(out / "model")
+        except Exception as e:  # важность — вспомогательный вывод, запуск из-за неё не роняем
+            res["feature_importance_error"] = repr(e)
         val_pred = va.select("feed_id", "item_id", "target").with_columns(pl.Series("score", score))
         if need_test:
             test_scores.append(model.predict(apply_pos(frames["test"], a, False)))

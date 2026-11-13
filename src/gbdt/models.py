@@ -76,6 +76,23 @@ class Ranker:
             else self.iterations
         return self
 
+    # ---- важность признаков и сохранение ---------------------------------------------------
+    def importance(self) -> dict[str, float]:
+        """Важность по модели без данных: CatBoost PredictionValuesChange, LightGBM gain. Сумма = 100."""
+        if self.kind == "catboost":
+            vals = np.asarray(self.model.get_feature_importance(type="PredictionValuesChange"), dtype=float)
+        else:
+            vals = np.asarray(self.model.feature_importance(importance_type="gain"), dtype=float)
+        total = vals.sum() or 1.0
+        pairs = sorted(zip(self.feats, (100.0 * vals / total).tolist()), key=lambda p: -p[1])
+        return {name: round(v, 4) for name, v in pairs}
+
+    def save(self, path) -> None:
+        if self.kind == "catboost":
+            self.model.save_model(str(path) + ".cbm")
+        else:
+            self.model.save_model(str(path) + ".txt", num_iteration=self.best_iteration)
+
     # ---- предсказание ---------------------------------------------------------------------
     def predict(self, df: pl.DataFrame) -> np.ndarray:
         if self.kind == "catboost":

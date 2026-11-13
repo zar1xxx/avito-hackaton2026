@@ -78,3 +78,14 @@ uv run --locked python -m scripts.build_similarity_features --train-parts 2 --re
 uv run --locked python -m scripts.run_baseline_check --feature-root data/features/cosine --train-parts 2 --out runs/baseline-cosine-2parts-001
 uv run --locked python -m scripts.compare_baselines --baseline runs/baseline-cosine-001 --candidate runs/baseline-cosine-2parts-001 --allow-train-growth --out runs/baseline-cosine-2parts-001/comparison.json
 ```
+| 2026-11-12 | danya | - | catboost/default pos=none mode=holdout extra=- depth=8 lr=0.05 | priv: 0.3596/0.3596/0.2973 | - | out=runs/cb8; feats=$B (f+cosine+infeed), 8 parts |
+| 2026-11-12 | danya | - | catboost/default pos=none mode=cv extra=- depth=8 lr=0.05 | priv: 0.3600/0.3601/0.2986 | - | out=runs/cb8-cv-B; feats=$B (f+cosine+infeed), 8 parts; iters 165 from cb8; Public submission 2026-11-12 |
+| 2026-11-12 | danya | - | catboost/default pos=none mode=holdout extra=- depth=8 lr=0.05 | priv: 0.3602/0.3602/0.2984 | - | out=runs/cb8-hist; feats=$H (+history), 8 parts |
+| 2026-11-12 | danya | - | lightgbm/default pos=none mode=holdout extra=- depth=8 lr=0.05 | priv: 0.3500/0.3501/0.2859 | - | out=runs/lgb8-hist; feats=$H (+history), 8 parts |
+| 2026-11-12 | danya | - | lightgbm/default pos=ipw mode=holdout extra=- depth=8 lr=0.05 | priv: 0.2778/0.2779/0.1960 | - | out=runs/lgb8-ipw; feats=$H (+history), 8 parts; ipw-max 10, rejected (non-monotone CTR by pos) |
+| 2026-11-12 | danya | - | lightgbm/default pos=feature mode=holdout extra=- depth=8 lr=0.05 | priv: 0.3496/0.3497/0.2851 | - | out=runs/lgb8-posf; feats=$H (+history), 8 parts |
+| 2026-11-12 | danya | - | lightgbm/default pos=topn mode=holdout extra=- depth=8 lr=0.05 | priv: 0.3497/0.3498/0.2858 | - | out=runs/lgb8-top50; feats=$H (+history), 8 parts |
+| 2026-11-12 | danya | - | catboost/YetiRankPairwise pos=none mode=holdout extra=- depth=8 lr=0.05 | priv: 0.3604/0.3605/0.2985 | - | out=runs/cb8-pair; feats=$H (+history), 8 parts; 14 min vs 8.7 |
+| 2026-11-13 | danya | - | catboost/default pos=none mode=cv extra=- depth=8 lr=0.05 | priv: 0.3619/0.3620/0.3005 | - | out=runs/cb8-cv; feats=$H (+history), 8 parts; iters 323 from cb8-hist |
+| 2026-11-13 | danya | - | lightgbm/default pos=none mode=cv extra=- depth=8 lr=0.05 | priv: 0.3565/0.3566/0.2953 | - | out=runs/lgb8-cv; feats=$H (+history), 8 parts; iters 126 from lgb8-hist |
+| 2026-11-13 | danya | - | lightgbm/default pos=none mode=cv extra=- depth=8 lr=0.05 | priv: 0.3562/0.3563/0.2948 | - | out=runs/lgb8-cv-w3; feats=$H (+history), 8 parts; val-weight 3 |
