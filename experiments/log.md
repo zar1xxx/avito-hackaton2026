@@ -212,3 +212,4 @@ uv run --locked python -m scripts.compare_baselines --baseline runs/baseline-ite
 | 2026-11-13 | danya | - | catboost/default pos=none mode=cv extra=- depth=8 lr=0.05 | priv: 0.3619/0.3620/0.3005 | - | out=runs/cb8-cv; feats=$H (+history), 8 parts; iters 323 from cb8-hist |
 | 2026-11-13 | danya | - | lightgbm/default pos=none mode=cv extra=- depth=8 lr=0.05 | priv: 0.3565/0.3566/0.2953 | - | out=runs/lgb8-cv; feats=$H (+history), 8 parts; iters 126 from lgb8-hist |
 | 2026-11-13 | danya | - | lightgbm/default pos=none mode=cv extra=- depth=8 lr=0.05 | priv: 0.3562/0.3563/0.2948 | - | out=runs/lgb8-cv-w3; feats=$H (+history), 8 parts; val-weight 3 |
+| 2026-11-13 | danya | - | catboost/default pos=none mode=holdout extra=- depth=8 lr=0.05 | priv: 0.3595/0.3595/0.2976 | - | out=runs/cb8-is; feats=$H + itemstats-008, 8 parts; vs cb8-hist priv -0.0008 [-0.0041, +0.0026], rejected |
