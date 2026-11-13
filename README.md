@@ -528,6 +528,17 @@ uv run --locked python -m scripts.audit_history_features --out runs/history_cach
 uv run --locked python -m scripts.analyse_history_events --train-parts 8 --out experiments/history_event_target_008
 ```
 
+Для связи событий с категорией кандидата доступен отдельный режим.
+Условие `h_cat_evtN > 0` означает, что категория кандидата встречалась
+в истории с типом события N. Таблица содержит доли target=1 для этих групп
+на выбранном train и полном val. Группы могут пересекаться. На результаты
+влияют состав категорий, длина истории и позиция в train. Значения описывают
+статистическую связь с целью, их интерпретация требует учёта этих факторов.
+
+```powershell
+uv run --locked python -m scripts.analyse_history_events --entity category --train-parts 32 --out experiments/history_category_event_target_032
+```
+
 ## Статистики товаров и категорий
 
 Группа `itemstats` содержит 32 Float32-признака. Для товара и категории считаются
